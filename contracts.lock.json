@@ -1,0 +1,6 @@
+{
+  "release": "1.0.2",
+  "manifest_sha256": "6c9e34dfd002cb1f3309dc3d98871cd1cd93135f77c46810711674158124cd37",
+  "source": "../f1ap-api/contracts/v1",
+  "acquisition": "controlled-local-sibling"
+}

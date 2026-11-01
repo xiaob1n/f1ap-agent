@@ -1,0 +1,18 @@
+[project]
+name = "f1ap-agent"
+version = "0.1.0"
+description = "E01 offline contract verification only; no worker or service"
+requires-python = ">=3.12,<3.13"
+dependencies = ["aio-pika==9.5.7", "jsonschema==4.25.1"]
+
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/f1ap_agent"]
+
+[project.scripts]
+f1ap-contract-verify = "f1ap_agent.contracts.cli:main"
+f1ap-agent-mq = "f1ap_agent.messaging.__main__:main"
+f1ap-agent-mq-integration = "f1ap_agent.messaging.integration:main"
