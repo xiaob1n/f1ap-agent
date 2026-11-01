@@ -1,0 +1,35 @@
+{
+  "run_id": "e03-g1-20261101-033834-04df6c",
+  "scope": "REAL_SERVICE",
+  "status": "PASS",
+  "contract_release": "1.0.2",
+  "agent_unittest": {
+    "tests": 64,
+    "result": "PASS"
+  },
+  "real_run": {
+    "consumer_queue": "f1ap.agent.tasks.v1",
+    "events_written": 12,
+    "event_types": [
+      "model.usage.updated.v1",
+      "prediction.question.completed.v1",
+      "agent.run.finished.v1"
+    ],
+    "fixed_executor_calls": 1,
+    "pending_after_run": 0,
+    "source_identities": 1
+  },
+  "evidence": [
+    "agent-output/request.json",
+    "agent-output/events.json",
+    "agent-runtime/"
+  ],
+  "not_run": [
+    "OpenF1",
+    "news",
+    "embedding",
+    "generation model",
+    "deployment",
+    "git commit"
+  ]
+}

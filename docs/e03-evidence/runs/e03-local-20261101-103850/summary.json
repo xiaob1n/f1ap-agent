@@ -1,0 +1,31 @@
+{
+  "run_id": "e03-local-20261101-103850",
+  "scope": "LOCAL_TEST",
+  "status": "LOCAL_ONLY_HISTORICAL",
+  "historical": true,
+  "superseded_by": "e03-g1-20261101-033834-04df6c",
+  "superseded_at": "2026-11-01",
+  "contract_release": "1.0.2",
+  "manifest_sha256": "6c9e34dfd002cb1f3309dc3d98871cd1cd93135f77c46810711674158124cd37",
+  "agent_unittest": {
+    "command": "TMPDIR=/private/tmp/f1ap-e03-agent .venv/bin/python -m unittest discover -s tests -v",
+    "exit_code": 0,
+    "tests": 64
+  },
+  "basedpyright": {
+    "scope": "src/f1ap_agent/messaging",
+    "errors": 0,
+    "warnings": 39
+  },
+  "independent_event_checks": {
+    "scope": "ACTUAL_EVENTS_OFFLINE",
+    "checks": 9,
+    "status": "PASS"
+  },
+  "real_service": {
+    "rabbitmq": "BLOCKED",
+    "reason": "No RabbitMQ host, isolated vhost, account, or current-session authorization was provided",
+    "g1": "NOT_RUN"
+  },
+  "not_run": ["RabbitMQ real broker", "MySQL", "Nacos", "OpenF1", "news", "embedding", "generation model", "deployment", "Git commit"]
+}
