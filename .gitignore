@@ -2,3 +2,6 @@
 .DS_Store
 __pycache__/
 *.py[cod]
+# 测试代码和测试证据不提交到仓库，保留本地运行。
+tests/
+docs/*evidence*
