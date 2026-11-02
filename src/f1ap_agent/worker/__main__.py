@@ -17,6 +17,7 @@ def main() -> int:
     parser.add_argument('--fixture', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--now')
+    parser.add_argument('--mapping', type=Path)
     parser.add_argument('--reject-send', action='store_true')
     parser.add_argument('--interrupt-after-call-start', action='store_true')
     args = parser.parse_args()
@@ -36,7 +37,7 @@ def main() -> int:
         if args.init_runtime:
             store.initialize()
         worker = Worker(store, contract, FakeExecutor(runtime / 'fake-executor.json',
-                        args.interrupt_after_call_start), LocalSender(runtime, not args.reject_send))
+                        args.interrupt_after_call_start), LocalSender(runtime, not args.reject_send), args.mapping)
         task, accepted = worker.run(args.fixture.read_bytes(), args.now)
         log = store.registry_log(str(task.run_id))
         atomic_json(output / 'request.json', task.request)

@@ -27,6 +27,8 @@ class Options(argparse.Namespace):
     delivery_timeout: float = 30.0
     confirm_timeout: float = 10.0
     init_runtime: bool = False
+    mapping: Path | None = None
+    existing_topology: bool = False
 
 
 def connection_config() -> ConnectionConfig:
@@ -50,6 +52,8 @@ def main() -> int:
     _ = parser.add_argument('--delivery-timeout', type=float, default=30.0)
     _ = parser.add_argument('--confirm-timeout', type=float, default=10.0)
     _ = parser.add_argument('--init-runtime', action='store_true')
+    _ = parser.add_argument('--mapping', type=Path)
+    _ = parser.add_argument('--existing-topology', action='store_true')
     args = parser.parse_args(namespace=Options())
     try:
         if args.max_messages < 0 or args.delivery_timeout <= 0 or args.confirm_timeout <= 0:
@@ -71,9 +75,10 @@ def main() -> int:
         if args.init_runtime:
             store.initialize()
         _ = store.registry()
-        worker = Worker(store, contract, FakeExecutor(runtime / 'fake-executor.json'), LocalSender(runtime))
+        worker = Worker(store, contract, FakeExecutor(runtime / 'fake-executor.json'), LocalSender(runtime), args.mapping)
         return asyncio.run(connect_and_consume(worker, config, 'f1ap.agent.tasks.v1', output,
-                            args.max_messages, args.delivery_timeout, args.confirm_timeout))
+                            args.max_messages, args.delivery_timeout, args.confirm_timeout,
+                            args.existing_topology))
     except (RuntimeFault, ValueError) as error:
         print(str(error), file=sys.stderr)
         return 2

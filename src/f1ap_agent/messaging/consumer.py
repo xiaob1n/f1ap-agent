@@ -106,7 +106,8 @@ async def consume(worker: Worker, queue: aio_pika.abc.AbstractQueue, output: Pat
 async def connect_and_consume(worker: Worker, connection_args: ConnectionConfig,
                               queue_name: str, output_dir: Path, max_messages: int = 0,
                               delivery_timeout: float = 30.0,
-                              confirm_timeout: float = 10.0) -> int:
+                              confirm_timeout: float = 10.0,
+                              existing_topology: bool = False) -> int:
     """建立单一连接，显式开启 mandatory return 异常和 publisher confirms。"""
     connection = await aio_pika.connect(
         host=str(connection_args['host']),
@@ -119,9 +120,13 @@ async def connect_and_consume(worker: Worker, connection_args: ConnectionConfig,
     async with connection:
         channel = await connection.channel(publisher_confirms=True, on_return_raises=True)
         _ = await channel.set_qos(prefetch_count=1)
-        queue = await channel.declare_queue(queue_name, durable=True, auto_delete=False)
-        exchange = await channel.declare_exchange('f1ap.v1', aio_pika.ExchangeType.DIRECT, durable=True)
-        _ = await queue.bind(exchange, routing_key='prediction.requested.v1')
+        if existing_topology:
+            queue = await channel.get_queue(queue_name, ensure=True)
+            exchange = await channel.get_exchange('f1ap.v1', ensure=True)
+        else:
+            queue = await channel.declare_queue(queue_name, durable=True, auto_delete=False)
+            exchange = await channel.declare_exchange('f1ap.v1', aio_pika.ExchangeType.DIRECT, durable=True)
+            _ = await queue.bind(exchange, routing_key='prediction.requested.v1')
         worker = Worker(worker.store, worker.contract, worker.executor,
-                        RoutingPublisher(exchange, asyncio.get_running_loop(), confirm_timeout))
+                        RoutingPublisher(exchange, asyncio.get_running_loop(), confirm_timeout), worker.mapping_path)
         return await consume(worker, queue, output_dir, max_messages, delivery_timeout)

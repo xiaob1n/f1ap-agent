@@ -22,7 +22,7 @@
 | Pydantic | 2.12.4 | 同上 | PASS | NOT_RUN | NOT_RUN | NOT_RUN |
 | jsonschema | 4.25.1 | 同上；最小环境支持3.12有实跑证据 | PASS | PASS | PASS（契约元结构与向量） | 不适用 |
 | aio-pika | 9.5.7 | 同上 | PASS | NOT_RUN | NOT_RUN | NOT_RUN |
-| HTTPX | 0.28.1 | 同上 | PASS | NOT_RUN | NOT_RUN | NOT_RUN |
+| HTTPX | 0.28.1 | 保留历史声明状态；E04 仅核验本地行为 | PASS（离线解析、原始发行哈希见 uv.lock） | PASS（.venv Python 3.12） | PASS（MockTransport；无真实网络） | BLOCKED（未连接真实 OpenF1） |
 | OpenAI SDK（仅候选） | 2.8.1 | 同上 | PASS | NOT_RUN | NOT_RUN | NOT_RUN |
 | 生成/Embedding供应商、模型、维度、价格 | **未指定** | 不假定默认供应商 | 不适用 | 不创建客户端 | 使用合成 MOCK_ONLY 配置引用，不伪装推理 | NOT_RUN，无密钥要求 |
 

@@ -6,19 +6,19 @@ from typing import Protocol
 
 from f1ap_agent.contracts.artifact import Contract
 from f1ap_agent.contracts.verifier import canonical, digest, evaluate
+from f1ap_agent.worker.research import bind, compute, results as research_results
 from f1ap_agent.messaging import Sender
 from f1ap_agent.runtime import (
-    Json, RuntimeFault, Store, atomic_json, json_events, json_object, json_array, json_integer, read_json,
+    Json, RuntimeFault, Store, atomic_json, json_events, json_object, json_array, json_integer, read_json, json_string,
 )
 from f1ap_agent.worker.models import Task
 from f1ap_agent.contracts.artifact import check_format
-from f1ap_agent.runtime import json_array, json_string
 
 
 def validate_log(task: Task, log: dict[str, Json], contract: Contract) -> None:
     """Verify persisted state shape, event hashes, and frozen event contracts."""
     required = {'run_id', 'phase', 'events', 'request', 'call_status'}
-    optional = {'call_key', 'call_started_at', 'results', 'finished', 'accepted'}
+    optional = {'call_key', 'call_started_at', 'results', 'finished', 'accepted', 'research'}
     if not required <= set(log) or set(log) - required - optional:
         raise RuntimeFault('LOG_SHAPE')
     if digest(json_object(log['request'])['payload']) != digest(task.payload):
@@ -106,7 +106,7 @@ def fixed_results(task: Task, reason: str) -> list[dict[str, Json]]:
             'definition_sha256': task.payload['definition_sha256'],
             'input_sha256': task.payload['input_sha256'], 'status': 'FAILED',
             'data_status': 'INSUFFICIENT', 'reason': reason, 'probabilities': [],
-            'recommendations': [], 'evidence': [], 'fixture_class': 'TEST_FIXTURE',
+            'recommendations': [], 'evidence': [], 'fixture_class': task.fixture_class,
         }
         if reason == 'FAKE_FIXED_OUTPUT':
             question = next(q for q in json_events(json_object(task.payload['definition'])['questions'])
@@ -149,6 +149,7 @@ class Worker:
     contract: Contract
     executor: Executor
     sender: Sender
+    mapping_path: Path | None = None
 
     def run(self, raw: bytes, now: str | None = None) -> tuple[Task, bool]:
         """Consume one fake delivery. Registered history never becomes a fresh run."""
@@ -185,6 +186,8 @@ class Worker:
             self.store.save(run_id, log)
         if task.expired():
             return task, self._finish(task, log, 'EXPIRED', None)
+        if task.is_research:
+            return task, self._finish(task, log, 'RESEARCH', None)
         if task.call_limit == 0:
             return task, self._finish(task, log, 'CALL_LIMIT_ZERO', None)
         call_key = stable_id(run_id, 'call:1')
@@ -200,7 +203,7 @@ class Worker:
 
     def _finish(self, task: Task, log: dict[str, Json], reason: str,
                 call_status: str | None) -> bool:
-        results = fixed_results(task, reason)
+        results = self._research_results(task, log) if reason == 'RESEARCH' else fixed_results(task, reason)
         events: list[dict[str, Json]] = []
         revision = 0
         if call_status is not None:
@@ -222,7 +225,7 @@ class Worker:
             'run_status': ('TIMED_OUT' if reason == 'EXPIRED' else
                 'SUCCEEDED' if all(result['status'] == 'VALID' for result in results) else
                 'PARTIAL' if any(result['status'] == 'VALID' for result in results) else 'FAILED'),
-            'last_usage_revision': revision, 'fixture_class': 'TEST_FIXTURE'}
+            'last_usage_revision': revision, 'fixture_class': task.fixture_class}
         events.append(envelope(task, 'finished', 'agent.run.finished.v1', final))
         context = {'request': task.payload, 'received_results': summaries, 'usage_history': []}
         for event in events:
@@ -232,6 +235,24 @@ class Worker:
         log.update(events=events, results=results, finished=final, phase='FINISHED')
         self.store.save(str(task.run_id), log)
         return self._send(log)
+
+    def _research_results(self, task: Task, log: dict[str, Json]) -> list[dict[str, Json]]:
+        """冻结计算身份后生成研究结果，复用原有事件落盘与恢复。"""
+        config = bind(task, self.mapping_path)
+        identity: dict[str, Json] = {'mapping_sha256': task.mapping_sha256,
+            'manifest_sha256': config.manifest_sha256, 'data_cutoff_at': task.payload['data_cutoff_at']}
+        if 'research' in log and log['research'] != identity:
+            raise RuntimeFault('RESEARCH_IDENTITY_CONFLICT')
+        log['research'] = identity
+        self.store.save(str(task.run_id), log)
+        research = compute(task, config)
+        results = research_results(task, research)
+        if research.features is not None and research.baseline is not None:
+            atomic_json(self.store.root / 'runs' / str(task.run_id) / 'research.json', {
+                'identity': identity, 'features': {key: list(values) for key, values in research.features.laps},
+                'counts': {item.option_key: list(item.counts) for item in research.baseline.marginals},
+                'method': 'PODIUM_PACE_BOOTSTRAP_V1', 'seed': 0, 'samples': 10000, 'laps_per_sample': 5})
+        return results
 
     def _send(self, log: dict[str, Json]) -> bool:
         """Persist every pending event before the first local acceptance attempt."""
