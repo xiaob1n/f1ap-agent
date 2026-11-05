@@ -51,8 +51,8 @@ class Task:
     def mapping_sha256(self) -> str:
         """从算法版本读取 mapping 原始字节摘要。"""
         algorithm = json_object(self.payload['profile'])['algorithm_version']
-        prefix = 'PODIUM_PACE_BOOTSTRAP_V1@'
         value = json_string(algorithm)
+        prefix = 'TEN_QUESTION_GRAPH_V1@' if value.startswith('TEN_QUESTION_GRAPH_V1@') else 'PODIUM_PACE_BOOTSTRAP_V1@'
         if not value.startswith(prefix) or len(value) != len(prefix) + 64:
             raise RuntimeFault('RESEARCH_MAPPING_VERSION')
         check_format('f1ap-sha256', value.removeprefix(prefix), '/payload/profile/algorithm_version')
@@ -77,10 +77,14 @@ class Task:
         if fixture_class == 'CONTROLLED_INPUT':
             profile = json_object(payload['profile'])
             algorithm = json_string(profile['algorithm_version'])
-            prefix = 'PODIUM_PACE_BOOTSTRAP_V1@'
+            e05 = algorithm.startswith('TEN_QUESTION_GRAPH_V1@')
+            prefix = 'TEN_QUESTION_GRAPH_V1@' if e05 else 'PODIUM_PACE_BOOTSTRAP_V1@'
+            strategies: list[Json] = [{'strategy': 'EXPECTED_POINTS', 'version': 'EXPECTED_POINTS_V1'}]
+            if e05:
+                strategies.append({'strategy': 'HIT_RATE', 'version': 'HIT_RATE_V1'})
             if (profile['tools'] != ['OPENF1_READ'] or profile['model_config_ref'] != 'NO_MODEL'
                 or profile['price_version'] != 'NOT_APPLICABLE'
-                or profile['strategies'] != [{'strategy': 'EXPECTED_POINTS', 'version': 'EXPECTED_POINTS_V1'}]
+                or profile['strategies'] != strategies
                 or not algorithm.startswith(prefix)):
                 raise RuntimeFault('RESEARCH_PROFILE')
             check_format('f1ap-sha256', algorithm.removeprefix(prefix), '/payload/profile/algorithm_version')

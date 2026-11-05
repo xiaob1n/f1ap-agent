@@ -8,7 +8,7 @@ from f1ap_agent.data.openf1.boundary import decode, exact, read_bytes
 from f1ap_agent.data.openf1.client import OpenF1Client
 from f1ap_agent.data.openf1.config import MAPPING_KEYS, Selection, parse_record
 from f1ap_agent.data.openf1.prepare import prepare
-from f1ap_agent.runtime import RuntimeFault, json_string
+from f1ap_agent.runtime import RuntimeFault, json_string, json_object
 
 
 class Options(argparse.Namespace):
@@ -27,7 +27,11 @@ def main() -> int:
     args = parser.parse_args(namespace=Options())
     try:
         client = OpenF1Client(args.base_url)
-        spec = exact(decode(read_bytes(args.spec)), MAPPING_KEYS - {'manifest'})
+        raw = json_object(decode(read_bytes(args.spec)))
+        extra = {'question_bindings', 'qualifying_session'} if 'question_bindings' in raw else set()
+        if extra and 'pit_session' in raw:
+            extra.add('pit_session')
+        spec = exact(raw, (MAPPING_KEYS | extra) - {'manifest'})
         spec['manifest'] = {'path': 'manifest.json', 'sha256': '0' * 64}
         _ = parse_record(spec, args.output / 'mapping.json', Selection(
             json_string(spec['round_id']), json_string(spec['definition_sha256']), '0' * 64))

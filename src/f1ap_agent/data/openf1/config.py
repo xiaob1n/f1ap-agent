@@ -20,6 +20,11 @@ FIELDS: Final[dict[str, tuple[str, ...]]] = {
 MAPPING_KEYS: Final = {'round_id', 'definition_sha256', 'mapping_version', 'source_ref',
     'valid_until', 'candidates', 'target_session', 'feature_session', 'event_start_at',
     'event_cutoff_at', 'endpoints', 'method', 'manifest'}
+E05_FIELDS: Final = {**FIELDS,
+    'drivers': (*FIELDS['drivers'], 'team_name'),
+    'pit': (*FIELDS['pit'], 'stop_duration', 'lane_duration'),
+    'session_result': ('meeting_key', 'session_key', 'driver_number', 'position',
+                       'dnf', 'dns', 'dsq', 'duration', 'number_of_laps')}
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +63,9 @@ class MappingConfig:
     method: Method
     manifest_path: Path
     manifest_sha256: str
+    bindings: dict[str, Json]
+    qualifying: Session | None
+    pit_session: Session | None = None
 
 
 def session(value: Json, expected: str) -> Session:
@@ -69,7 +77,12 @@ def session(value: Json, expected: str) -> Session:
 
 
 def parse_record(value: Json, path: Path, selection: Selection) -> MappingConfig:
-    item = exact(value, MAPPING_KEYS)
+    source = json_object(value)
+    e05 = 'question_bindings' in source
+    extra = {'question_bindings', 'qualifying_session'} if e05 else set()
+    if e05 and 'pit_session' in source:
+        extra.add('pit_session')
+    item = exact(value, MAPPING_KEYS | extra)
     if item['round_id'] != selection.round_id or sha(item['definition_sha256']) != selection.definition_sha256:
         raise RuntimeFault('OPENF1_MAPPING_IDENTITY')
     candidates = tuple(sorted((key, json_integer(number))
@@ -81,14 +94,20 @@ def parse_record(value: Json, path: Path, selection: Selection) -> MappingConfig
     target, feature = session(item['target_session'], 'Race'), session(item['feature_session'], 'Practice')
     if target.session_key == feature.session_key:
         raise RuntimeFault('OPENF1_TARGET_LEAKAGE')
+    if 'pit_session' in item and session(item['pit_session'], 'Race').session_key == target.session_key:
+        raise RuntimeFault('OPENF1_TARGET_LEAKAGE')
     start, cutoff, valid = (timestamp(item[key]) for key in ('event_start_at', 'event_cutoff_at', 'valid_until'))
     if not start < cutoff <= valid:
         raise RuntimeFault('OPENF1_TIME_ORDER')
-    endpoints = exact(item['endpoints'], set(FIELDS))
+    allowed = E05_FIELDS if e05 else FIELDS
+    endpoints = exact(item['endpoints'], set(allowed))
     parsed_endpoints: list[tuple[str, tuple[str, ...]]] = []
-    for endpoint, required in FIELDS.items():
+    for endpoint, required in allowed.items():
         fields = tuple(json_string(field) for field in json_array(endpoints[endpoint]))
-        if len(set(fields)) != len(fields) or set(fields) != set(required):
+        permitted = [set(required)]
+        if endpoint == 'race_control':
+            permitted.append(set(required) | {'scope', 'sector', 'driver_number'})
+        if len(set(fields)) != len(fields) or set(fields) not in permitted:
             raise RuntimeFault('OPENF1_ENDPOINT_FIELDS:' + endpoint)
         parsed_endpoints.append((endpoint, fields))
     method = exact(item['method'], {'seed', 'samples', 'laps_per_sample', 'compound', 'tyre_age_min', 'tyre_age_max'})
@@ -104,7 +123,10 @@ def parse_record(value: Json, path: Path, selection: Selection) -> MappingConfig
         raise RuntimeFault('OPENF1_PROVENANCE')
     return MappingConfig(selection, version, source, valid, candidates, target, feature, start, cutoff,
         tuple(parsed_endpoints), Method(compound, low, high),
-        safe_path(path.parent, json_string(manifest['path'])), sha(manifest['sha256']))
+        safe_path(path.parent, json_string(manifest['path'])), sha(manifest['sha256']),
+        json_object(item['question_bindings']) if e05 else {},
+        session(item['qualifying_session'], 'Qualifying') if e05 else None,
+        session(item['pit_session'], 'Race') if 'pit_session' in item else None)
 
 
 def load_mapping(path: Path, selection: Selection) -> MappingConfig:

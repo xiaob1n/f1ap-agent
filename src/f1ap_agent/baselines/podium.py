@@ -31,6 +31,7 @@ class Bootstrap:
     samples: int = 10000
     seed: int = 0
     laps_per_sample: int = 5
+    rankings: tuple[tuple[str, ...], ...] = ()
 
 
 def bootstrap(laps: Mapping[str, Sequence[int]]) -> Bootstrap:
@@ -43,6 +44,7 @@ def bootstrap(laps: Mapping[str, Sequence[int]]) -> Bootstrap:
     rng = random.Random(0)
     pools = {key: sorted(laps[key]) for key in options}
     counts = {key: [0, 0, 0] for key in options}
+    rankings: list[tuple[str, ...]] = []
     for _ in range(10000):
         ranking = sorted(
             (sorted(pools[key][rng.randrange(len(pools[key]))] for _ in range(5))[2], key)
@@ -50,8 +52,9 @@ def bootstrap(laps: Mapping[str, Sequence[int]]) -> Bootstrap:
         )
         for rank, (_, option_key) in enumerate(ranking[:3]):
             counts[option_key][rank] += 1
+        rankings.append(tuple(key for _, key in ranking))
     return Bootstrap(tuple(Marginal(key, (counts[key][0], counts[key][1], counts[key][2]))
-                           for key in options))
+                           for key in options), rankings=tuple(rankings))
 
 
 def optimal_podium(result: Bootstrap, points: Mapping[str, Decimal], exact_multiplier: Decimal) -> tuple[tuple[str, str, str], Decimal]:

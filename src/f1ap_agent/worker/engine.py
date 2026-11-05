@@ -108,7 +108,7 @@ def fixed_results(task: Task, reason: str) -> list[dict[str, Json]]:
             'data_status': 'INSUFFICIENT', 'reason': reason, 'probabilities': [],
             'recommendations': [], 'evidence': [], 'fixture_class': task.fixture_class,
         }
-        if reason == 'FAKE_FIXED_OUTPUT':
+        if reason in ('FAKE_FIXED_OUTPUT', 'E06_SYNTHETIC_V1'):
             question = next(q for q in json_events(json_object(task.payload['definition'])['questions'])
                             if q['question_id'] == question_id)
             rule = json_object(question['rule'])
@@ -128,6 +128,17 @@ def fixed_results(task: Task, reason: str) -> list[dict[str, Json]]:
                                     'option_keys': [], 'probability': '1', 'rank': None}],
                     recommendations=[{'strategy': strategy['strategy'], 'version': strategy['version'],
                         'objective': 'EXPECTED_POINTS', 'expected_score': '0', 'picks': picks}])
+                if reason == 'E06_SYNTHETIC_V1':
+                    alternatives = ([{'value_kind': 'OPTION', 'option_key': option['option_key']}
+                                     for option in reversed(options[-max(1, count):])]
+                                    if question['value_kind'] == 'OPTION' else
+                                    [{'value_kind': 'NUMERIC', 'numeric_value':
+                                      json_object(question['numeric_bounds'])['max']}])
+                    payload['recommendations'] = [
+                        {'strategy': item['strategy'], 'version': item['version'],
+                         'objective': item['strategy'], 'expected_score': '0',
+                         'picks': picks if item['strategy'] == 'EXPECTED_POINTS' else alternatives}
+                        for item in json_events(json_object(task.payload['profile'])['strategies'])]
         payload['result_sha256'] = digest(payload)
         results.append(payload)
     return results
@@ -188,6 +199,16 @@ class Worker:
             return task, self._finish(task, log, 'EXPIRED', None)
         if task.is_research:
             return task, self._finish(task, log, 'RESEARCH', None)
+        profile = json_object(task.payload['profile'])
+        if task.fixture_class == 'TEST_FIXTURE' and profile['algorithm_version'] == 'E06_SYNTHETIC_V1':
+            expected: dict[str, Json] = {
+                'algorithm_version': 'E06_SYNTHETIC_V1',
+                'strategies': [{'strategy': name, 'version': name + '_V1'}
+                               for name in ('EXPECTED_POINTS', 'HIT_RATE')],
+                'model_config_ref': 'MOCK_ONLY', 'price_version': 'NOT_APPLICABLE', 'tools': []}
+            if profile != expected or task.call_limit != 0:
+                raise RuntimeFault('E06_SYNTHETIC_PROFILE')
+            return task, self._finish(task, log, 'E06_SYNTHETIC_V1', None)
         if task.call_limit == 0:
             return task, self._finish(task, log, 'CALL_LIMIT_ZERO', None)
         call_key = stable_id(run_id, 'call:1')
@@ -245,6 +266,9 @@ class Worker:
             raise RuntimeFault('RESEARCH_IDENTITY_CONFLICT')
         log['research'] = identity
         self.store.save(str(task.run_id), log)
+        if json_string(json_object(task.payload['profile'])['algorithm_version']).startswith('TEN_QUESTION_GRAPH_V1@'):
+            from f1ap_agent.graph import run
+            return run(task, config)
         research = compute(task, config)
         results = research_results(task, research)
         if research.features is not None and research.baseline is not None:

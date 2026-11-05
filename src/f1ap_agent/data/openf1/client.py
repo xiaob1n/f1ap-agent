@@ -7,8 +7,11 @@ from urllib.parse import urlsplit
 import httpx
 
 from f1ap_agent.data.openf1.boundary import MAX_BYTES, decode
-from f1ap_agent.data.openf1.config import FIELDS, MappingConfig
+from f1ap_agent.data.openf1.config import MappingConfig
 from f1ap_agent.runtime import Json, RuntimeFault, json_array, json_object
+
+
+NO_RESULTS = b'{"detail":"No results found."}'
 
 
 def utc_now() -> str:
@@ -42,14 +45,23 @@ class OpenF1Client:
             with httpx.Client(transport=self.transport, timeout=httpx.Timeout(10, connect=5),
                               limits=httpx.Limits(max_connections=1, max_keepalive_connections=1),
                               follow_redirects=False, trust_env=False) as client:
-                for endpoint in FIELDS:
-                    params = {'meeting_key': str(config.feature.meeting_key),
-                              'session_key': str(config.feature.session_key)}
+                for endpoint, _ in config.endpoints:
+                    scope = config.qualifying if endpoint == 'session_result' and config.qualifying else config.feature
+                    if endpoint == 'pit' and config.pit_session:
+                        scope = config.pit_session
+                    params = {'meeting_key': str(scope.meeting_key),
+                              'session_key': str(scope.session_key)}
                     time_field = 'date_start' if endpoint == 'laps' else 'date'
                     if endpoint in ('laps', 'weather', 'race_control', 'pit'):
-                        params[time_field + '>='] = config.event_start_at
-                        params[time_field + '<='] = config.event_cutoff_at
+                        # OpenF1 比较符放在参数名末尾，等号由 URL 编码器添加。
+                        if not (endpoint == 'pit' and config.pit_session):
+                            params[time_field + '>'] = config.event_start_at
+                        params[time_field + '<'] = config.event_cutoff_at
                     with client.stream('GET', self.base_url + '/' + endpoint, params=params) as response:
+                        # 公共 OpenF1 对空结果返回精确的 404 No results found；只有这一种规范化为空数组
+                        if response.status_code == 404 and response.read() == NO_RESULTS:
+                            responses.append(Response(endpoint, b'[]', self.clock(), ()))
+                            continue
                         if response.status_code != 200:
                             raise RuntimeFault('OPENF1_HTTP_STATUS:' + str(response.status_code))
                         observed = self.clock()

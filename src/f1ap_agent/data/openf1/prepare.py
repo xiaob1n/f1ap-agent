@@ -7,8 +7,8 @@ from pathlib import Path
 from f1ap_agent.data.openf1.boundary import decode, exact, read_bytes, timestamp
 from f1ap_agent.data.openf1.client import OpenF1Client, Response
 from f1ap_agent.data.openf1.config import FIELDS, MAPPING_KEYS, Selection, parse_record
-from f1ap_agent.data.openf1.snapshot import UNITS
-from f1ap_agent.runtime import Json, RuntimeFault, json_string
+from f1ap_agent.data.openf1.snapshot import UNITS, E05_UNITS
+from f1ap_agent.runtime import Json, RuntimeFault, json_string, json_object
 
 
 def write_once(path: Path, raw: bytes) -> None:
@@ -23,11 +23,12 @@ def encoded(value: Json) -> bytes:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()
 
 
-def freeze(responses: tuple[Response, ...], output_dir: Path, generated_at: str) -> str:
+def freeze(responses: tuple[Response, ...], output_dir: Path, generated_at: str,
+           fields: dict[str, tuple[str, ...]] = FIELDS) -> str:
     """保存原始响应及字段/单位/观测摘要，返回清单原始字节哈希。"""
     _ = timestamp(generated_at)
     entries: list[Json] = []
-    if {response.endpoint for response in responses} != set(FIELDS) or len(responses) != len(FIELDS):
+    if {response.endpoint for response in responses} != set(fields) or len(responses) != len(fields):
         raise RuntimeFault('OPENF1_RESPONSE_SET')
     for response in responses:
         if timestamp(response.first_observed_at) > generated_at:
@@ -36,10 +37,10 @@ def freeze(responses: tuple[Response, ...], output_dir: Path, generated_at: str)
         write_once(output_dir / filename, response.raw)
         entries.append({'endpoint': response.endpoint, 'path': filename,
             'sha256': hashlib.sha256(response.raw).hexdigest(), 'row_count': len(response.rows),
-            'first_observed_at': response.first_observed_at, 'fields': list(FIELDS[response.endpoint]),
+            'first_observed_at': response.first_observed_at, 'fields': list(fields[response.endpoint]),
             'observed_fields': sorted({key for row in response.rows for key in row})})
     manifest: dict[str, Json] = {'schema_version': 'OPENF1_SNAPSHOT_V1', 'generated_at': generated_at,
-        'responses': entries, 'units': UNITS,
+        'responses': entries, 'units': E05_UNITS if 'session_result' in fields else UNITS,
         'limitations': ['availability_unverified', 'fuel_unknown', 'traffic_track_evolution_unobserved']}
     raw = encoded(manifest)
     write_once(output_dir / 'manifest.json', raw)
@@ -48,7 +49,11 @@ def freeze(responses: tuple[Response, ...], output_dir: Path, generated_at: str)
 
 def prepare(spec_path: Path, output_dir: Path, client: OpenF1Client) -> Path:
     """准备配置是单条 mapping 记录（不含 manifest），不接受任意 URL/查询。"""
-    item = exact(decode(read_bytes(spec_path)), MAPPING_KEYS - {'manifest'})
+    raw_spec = json_object(decode(read_bytes(spec_path)))
+    extra = {'question_bindings', 'qualifying_session'} if 'question_bindings' in raw_spec else set()
+    if 'question_bindings' in raw_spec and 'pit_session' in raw_spec:
+        extra.add('pit_session')
+    item = exact(raw_spec, (MAPPING_KEYS | extra) - {'manifest'})
     item['manifest'] = {'path': 'manifest.json', 'sha256': '0' * 64}
     selection = Selection(json_string(item['round_id']), json_string(item['definition_sha256']), '0' * 64)
     config = parse_record(item, spec_path, selection)
@@ -62,7 +67,7 @@ def prepare(spec_path: Path, output_dir: Path, client: OpenF1Client) -> Path:
     if generated > config.valid_until:
         raise RuntimeFault('OPENF1_MAPPING_EXPIRED')
     output_dir.mkdir(parents=True)
-    manifest_sha256 = freeze(responses, output_dir, generated)
+    manifest_sha256 = freeze(responses, output_dir, generated, dict(config.endpoints))
     item['manifest'] = {'path': 'manifest.json', 'sha256': manifest_sha256}
     path = output_dir / 'mapping.json'
     write_once(path, encoded({'schema_version': 'OPENF1_MAPPING_V1', 'mappings': [item]}))
