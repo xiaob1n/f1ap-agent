@@ -17,7 +17,7 @@
 
 | 项目 | 固定候选版本 | 官方独立兼容声明 | 解析/哈希锁 | 本地导入 | 无服务单测 | 真实服务/调用 |
 | --- | --- | --- | --- | --- | --- | --- |
-| LangGraph | 1.0.3 | PyPI JSON直连超时；未独立核对文档 | PASS（3.12目标交集） | NOT_RUN | NOT_RUN | NOT_RUN |
+| LangGraph | 1.0.3 | E05 固定本地图，不调用模型 | PASS（uv.lock） | PASS：`1.0.3 StateGraph` | PASS（E05 图场景及全量142测试） | NOT_RUN |
 | Chroma | 1.3.5 | 同上 | PASS | NOT_RUN；未实例化持久化库/默认Embedding | NOT_RUN | NOT_RUN |
 | Pydantic | 2.12.4 | 同上 | PASS | NOT_RUN | NOT_RUN | NOT_RUN |
 | jsonschema | 4.25.1 | 同上；最小环境支持3.12有实跑证据 | PASS | PASS | PASS（契约元结构与向量） | 不适用 |
@@ -39,3 +39,7 @@ UV_CACHE_DIR="$PI_SCRATCH_DIR/uv-cache" UV_HTTP_TIMEOUT=20 uv pip compile \
 解析耗时实测14.20秒。未安装110包，未创建网络客户端，不调用真实生成/Embedding/OpenF1/MQ。E02/E08/E09需按对应批准边界验证 Linux/部署平台、实际导入、库持久化与真实SDK；当前macOS候选锁不能替代目标平台验证。
 
 Java/基础设施候选与Nacos适配阻塞见 API `docs/dependency-matrix.md`。两端版本资料与真实服务验收状态独立保留。
+
+## E05 安装实测（2026-11-03）
+
+使用 `uv lock --default-index https://pypi.tuna.tsinghua.edu.cn/simple` 和同源 `uv sync --locked`；实际输出 `Resolved 51 packages in 9.05s`、`Installed 32 packages in 28ms`。随后 `.venv/bin/python -c 'from importlib.metadata import version; from langgraph.graph import StateGraph; print(version("langgraph"), StateGraph.__name__)'` 输出 `1.0.3 StateGraph`，退出 0。上游导入产生 `LangChainPendingDeprecationWarning`（allowed_objects 默认值将改变），没有压制。首次组合命令的 import print 因 shell 引号导致 NameError，已单独修正执行；安装本身成功。

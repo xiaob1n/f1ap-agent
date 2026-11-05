@@ -1,5 +1,15 @@
 # E04 Agent 验证与交接
 
+## 2026-11-03 真实矩阵通过（摩纳哥站）
+
+用户改用自己的 OpenF1/MongoDB 数据源并把目标站改为 2026 摩纳哥（meeting 1286）。真实 run `e04-20261103T083731Z-60079920` 的 API 服务报告为 **11/11 REAL_SERVICE PASS**，`engineering_status=PASS`；Agent 实际消费 MQ 请求、读取冻结 P3（11294，SOFT）输入并产出十题研究结果，`podium-baseline` 独立重放通过。G2 仍因完整规则未核验为 BLOCKED。详证见 [API 记录](../../f1ap-api/docs/e04-verification.md)。
+
+## 2026-11-03 真实运行进展
+
+下文为历史本地验收记录。最新真实 run `e04-20261103T054837Z-afbce902` 已真实执行 Agent MQ 路径；API 侧服务报告为10 PASS、baseline 1 BLOCKED，参见 [API 最新记录](../../f1ap-api/docs/e04-verification.md)。原 run 顶层 FAIL 不升级。
+
+真实冻结包含525圈、84 stints、60天气、102赛控记录。baseline 因22个完整圈结束晚于P2截止而整批拒绝；没有生成 `research.json`，没有补造样本。普通赛控消息不再清除先前旗号；实际未知旗号仍保守排除。跨截止圈是否逐条排除，等待用户决定。最新 Agent 全量146项通过。
+
 日期：2026-11-01。范围：Agent B2 OpenF1 受限准备、冻结输入、领奖台统计基线和 B4 研究结果适配最小部分。用户本次选择“先完成本地”，真实 OpenF1、RabbitMQ、MySQL、Redis 和 G2 规则门保持 BLOCKED。真实编排入口、实际 Agent CLI 路径和本 run 资源边界已交付，但本次没有启动真实服务。
 
 对端交接：[API E04 验证与交接](../../f1ap-api/docs/e04-verification.md)。本地范围交付，不代表原计划的真实联合编排和 G2 已完成。
