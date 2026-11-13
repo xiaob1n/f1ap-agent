@@ -59,13 +59,21 @@ class Task:
         return value.removeprefix(prefix)
 
     @classmethod
-    def parse(cls, raw: bytes, contract: Contract, now: str | None = None) -> 'Task':
+    def parse(cls, raw: bytes, contract: Contract, now: str | None = None) -> 'Task | NewsTask':
         """Validate exactly once with E01, then convert domain fields without coercion."""
         verdict = evaluate(raw, contract=contract)
         if not verdict['accepted']:
             raise RuntimeFault('INVALID_PAYLOAD:' + str(verdict['error']))
         request = json_object(parse(raw))
         payload = json_object(request['payload'])
+        if request['event_type'] == 'news.refresh.requested.v1':
+            stamp = now or json_string(payload['data_cutoff_at'])
+            check_format('f1ap-utc-ms', stamp, '/now')
+            return NewsTask(request, RunId(json_string(payload['run_id'])),
+                json_string(payload['task_key']), json_integer(payload['attempt_no']),
+                json_integer(payload['call_limit']),
+                datetime.fromisoformat(stamp.replace('Z', '+00:00')),
+                datetime.fromisoformat(json_string(payload['expires_at']).replace('Z', '+00:00')))
         if json_string(request['event_type']) != 'prediction.requested.v1':
             raise RuntimeFault('B1_REQUIRES_PREDICTION_REQUEST')
         fixture_class = json_string(payload['fixture_class'])
@@ -105,9 +113,51 @@ class Task:
     def stamp(self) -> str:
         return self.now.isoformat(timespec='milliseconds').replace('+00:00', 'Z')
 
-    def expired(self) -> bool:
+    @property
+    def deadline(self) -> datetime | None:
+        """只对 LIVE 启用已经由冻结契约核验的截止时间。"""
+        value = json_object(self.payload['definition'])['deadline_at']
+        if self.payload['purpose'] != 'LIVE' or value is None:
+            return None
+        return datetime.fromisoformat(json_string(value).replace('Z', '+00:00'))
+
+    def expired(self, now: datetime | None = None) -> bool:
         definition = json_object(self.payload['definition'])
         deadline = definition['deadline_at']
+        current = self.now if now is None else now
         live_expired = (self.payload['purpose'] == 'LIVE' and deadline is not None
-                        and self.stamp() >= json_string(deadline))
-        return self.now >= self.expires_at or live_expired
+                        and current >= datetime.fromisoformat(json_string(deadline).replace('Z', '+00:00')))
+        return current >= self.expires_at or live_expired
+
+
+@dataclass(frozen=True, slots=True)
+class NewsTask:
+    """新闻任务仅携带公共运行身份，不具有预测属性。"""
+    request: dict[str, Json]
+    run_id: RunId
+    task_key: str
+    attempt_no: int
+    call_limit: int
+    now: datetime
+    expires_at: datetime
+
+    @property
+    def payload(self) -> dict[str, Json]:
+        return json_object(self.request['payload'])
+
+    @property
+    def fixture_class(self) -> str:
+        return json_string(self.payload['fixture_class'])
+
+    @property
+    def deadline(self) -> None:
+        return None
+
+    def raw(self) -> bytes:
+        return canonical(self.request)
+
+    def stamp(self) -> str:
+        return self.now.isoformat(timespec='milliseconds').replace('+00:00', 'Z')
+
+    def expired(self, now: datetime | None = None) -> bool:
+        return (self.now if now is None else now) >= self.expires_at

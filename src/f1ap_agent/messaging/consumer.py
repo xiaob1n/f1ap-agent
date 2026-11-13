@@ -1,6 +1,6 @@
 """单进程、prefetch=1 的 RabbitMQ Worker 适配。"""
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Protocol, TypedDict
@@ -11,7 +11,8 @@ from f1ap_agent.contracts.verifier import Rejection
 from f1ap_agent.messaging import Exchange, RabbitPublisher, source_identity
 from f1ap_agent.runtime import Json, RuntimeFault, atomic_json, json_object, read_json
 from f1ap_agent.worker.engine import Worker
-from f1ap_agent.worker.models import Task
+from f1ap_agent.worker.models import Task, NewsTask
+from f1ap_agent.worker.news import NewsDependency
 
 
 class ConnectionConfig(TypedDict):
@@ -53,7 +54,7 @@ class RabbitConsumer:
     worker: Worker
     clock: Callable[[], str] = utc_now
 
-    def process(self, body: bytes) -> tuple[Task, bool]:
+    def process(self, body: bytes) -> tuple[Task | NewsTask, bool]:
         """验证和源身份落盘与 Worker 状态共用同一个写锁。"""
         with self.worker.store.exclusive():
             now = self.clock()
@@ -72,6 +73,8 @@ class RabbitConsumer:
         """仅成功落盘并确认全部回包后 ACK；非法消息明确拒绝。"""
         try:
             _, accepted = await asyncio.to_thread(self.process, body)
+        except NewsDependency as error:
+            raise RetryableDelivery(error.code) from error
         except (RuntimeFault, Rejection, ValueError, UnicodeError):
             await delivery.reject(requeue=False)
             return False
@@ -107,7 +110,8 @@ async def connect_and_consume(worker: Worker, connection_args: ConnectionConfig,
                               queue_name: str, output_dir: Path, max_messages: int = 0,
                               delivery_timeout: float = 30.0,
                               confirm_timeout: float = 10.0,
-                              existing_topology: bool = False) -> int:
+                              existing_topology: bool = False,
+                              reconciliation: tuple[str, str, int] | None = None) -> int:
     """建立单一连接，显式开启 mandatory return 异常和 publisher confirms。"""
     connection = await aio_pika.connect(
         host=str(connection_args['host']),
@@ -119,6 +123,14 @@ async def connect_and_consume(worker: Worker, connection_args: ConnectionConfig,
     )
     async with connection:
         channel = await connection.channel(publisher_confirms=True, on_return_raises=True)
+        if reconciliation is not None:
+            exchange = await channel.get_exchange('f1ap.v1', ensure=True)
+            worker = replace(worker, sender=RoutingPublisher(exchange, asyncio.get_running_loop(), confirm_timeout))
+            accepted = await asyncio.to_thread(worker.reconcile_usage, *reconciliation)
+            log = worker.store.registry_log(reconciliation[0])
+            atomic_json(output_dir / 'request.json', log['request'])
+            atomic_json(output_dir / 'events.json', log['events'])
+            return 0 if accepted else 2
         _ = await channel.set_qos(prefetch_count=1)
         if existing_topology:
             queue = await channel.get_queue(queue_name, ensure=True)
@@ -127,6 +139,6 @@ async def connect_and_consume(worker: Worker, connection_args: ConnectionConfig,
             queue = await channel.declare_queue(queue_name, durable=True, auto_delete=False)
             exchange = await channel.declare_exchange('f1ap.v1', aio_pika.ExchangeType.DIRECT, durable=True)
             _ = await queue.bind(exchange, routing_key='prediction.requested.v1')
-        worker = Worker(worker.store, worker.contract, worker.executor,
-                        RoutingPublisher(exchange, asyncio.get_running_loop(), confirm_timeout), worker.mapping_path)
+            _ = await queue.bind(exchange, routing_key='news.refresh.requested.v1')
+        worker = replace(worker, sender=RoutingPublisher(exchange, asyncio.get_running_loop(), confirm_timeout))
         return await consume(worker, queue, output_dir, max_messages, delivery_timeout)

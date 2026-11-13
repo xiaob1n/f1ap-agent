@@ -1,6 +1,9 @@
 """Deterministic local fake execution and durable recovery state machine."""
 import uuid
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
 
@@ -11,14 +14,18 @@ from f1ap_agent.messaging import Sender
 from f1ap_agent.runtime import (
     Json, RuntimeFault, Store, atomic_json, json_events, json_object, json_array, json_integer, read_json, json_string,
 )
-from f1ap_agent.worker.models import Task
+from f1ap_agent.worker.models import Task, NewsTask
+import f1ap_agent.worker.news as news
 from f1ap_agent.contracts.artifact import check_format
+from f1ap_agent.models.calls import Calls
+from f1ap_agent.models.mock import MockPlan, MockProvider, Provider
 
 
 def validate_log(task: Task, log: dict[str, Json], contract: Contract) -> None:
     """Verify persisted state shape, event hashes, and frozen event contracts."""
     required = {'run_id', 'phase', 'events', 'request', 'call_status'}
-    optional = {'call_key', 'call_started_at', 'results', 'finished', 'accepted', 'research'}
+    optional = {'call_key', 'call_started_at', 'results', 'finished', 'accepted', 'research',
+                'schema_version', 'mock_plan_sha256', 'mock_script_sha256', 'lease_until', 'calls'}
     if not required <= set(log) or set(log) - required - optional:
         raise RuntimeFault('LOG_SHAPE')
     if digest(json_object(log['request'])['payload']) != digest(task.payload):
@@ -32,16 +39,23 @@ def validate_log(task: Task, log: dict[str, Json], contract: Contract) -> None:
         check_format('f1ap-uuid', json_string(log['call_key']), '/call_key')
         check_format('f1ap-utc-ms', json_string(log['call_started_at']), '/call_started_at')
     events = json_events(log['events'])
+    if 'schema_version' in log and log['schema_version'] != '1.1':
+        raise RuntimeFault('LOG_VERSION')
     if log['phase'] == 'REGISTERED':
-        if events or 'accepted' in log or 'results' in log or 'finished' in log:
+        if ((events and log.get('schema_version') != '1.1')
+                or ('accepted' in log and log.get('schema_version') != '1.1')
+                or 'results' in log or 'finished' in log):
             raise RuntimeFault('LOG_INCOMPLETE_STATE')
         return
     results = json_events(log['results'])
     summaries = [{key: result[key] for key in ('question_id', 'result_sha256', 'status')}
                  for result in results]
     context = {'request': task.payload, 'received_results': summaries, 'usage_history': []}
-    revision = 0 if log['call_status'] is None else 1
-    if len(events) != 11 + revision or len(results) != 10:
+    predictions = [event for event in events if event['event_type'] == 'prediction.question.completed.v1']
+    finishes = [event for event in events if event['event_type'] == 'agent.run.finished.v1']
+    usages = [event for event in events if event['event_type'] == 'model.usage.updated.v1']
+    if (len(results) != len(task.question_ids) or len(finishes) != 1
+            or len(events) != len(predictions) + len(finishes) + len(usages)):
         raise RuntimeFault('LOG_EVENT_SET')
     ids = [event['event_id'] for event in events]
     if len(set(json_string(item) for item in ids)) != len(ids):
@@ -50,10 +64,13 @@ def validate_log(task: Task, log: dict[str, Json], contract: Contract) -> None:
         verdict = evaluate(canonical(event), contract=contract, context=context)
         if not verdict['accepted']:
             raise RuntimeFault('LOG_EVENT_CONTRACT')
-    if [event['payload'] for event in events[revision:-1]] != results:
+    if [event['payload'] for event in predictions] != results:
         raise RuntimeFault('LOG_RESULTS_CONFLICT')
-    if events[-1]['event_type'] != 'agent.run.finished.v1' or events[-1]['payload'] != log['finished']:
+    if finishes[0]['payload'] != log['finished']:
         raise RuntimeFault('LOG_FINISHED_CONFLICT')
+    prior_usages = [event for event in events[:events.index(finishes[0])]
+                    if event['event_type'] == 'model.usage.updated.v1']
+    revision = max((json_integer(json_object(event['payload'])['usage_revision']) for event in prior_usages), default=0)
     if json_object(log['finished'])['last_usage_revision'] != revision:
         raise RuntimeFault('LOG_USAGE_CONFLICT')
     accepted_ids = [json_string(item) for item in json_array(log.get('accepted', []))]
@@ -161,14 +178,42 @@ class Worker:
     executor: Executor
     sender: Sender
     mapping_path: Path | None = None
+    mock_plan: MockPlan | None = None
+    provider: Provider | None = None
+    clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
+    scheduler: Callable[[float], None] = time.sleep
+    checkpoint: Callable[[str], None] = lambda name: None
+    mock_plan_path: Path | None = None
+    news_catalog_path: Path | None = None
 
-    def run(self, raw: bytes, now: str | None = None) -> tuple[Task, bool]:
+    def calls(self) -> Calls:
+        if self.mock_plan is None or self.provider is None:
+            raise RuntimeFault('MOCK_PROVIDER_REQUIRED')
+        return Calls(self.store, self.contract, self.mock_plan, self.provider,
+                     self.clock, self.scheduler, self.checkpoint)
+
+    def run(self, raw: bytes, now: str | None = None) -> tuple[Task | NewsTask, bool]:
         """Consume one fake delivery. Registered history never becomes a fresh run."""
         with self.store.exclusive():
             return self._run(raw, now)
 
-    def _run(self, raw: bytes, now: str | None) -> tuple[Task, bool]:
+    def _run(self, raw: bytes, now: str | None) -> tuple[Task | NewsTask, bool]:
         task = Task.parse(raw, self.contract, now)
+        match task:
+            case NewsTask():
+                return task, self._news(task)
+            case Task():
+                return self._predict(task)
+
+    def _predict(self, task: Task) -> tuple[Task, bool]:
+        profile = json_object(task.payload['profile'])
+        controlled = json_string(profile['model_config_ref']).startswith('E07_MOCK_')
+        if controlled:
+            calls = self.calls()
+            if (task.fixture_class != 'TEST_FIXTURE'
+                    or profile['model_config_ref'] not in {call.model_config_ref for call in calls.plan.calls}
+                    or task.is_research or profile['algorithm_version'] == 'E06_SYNTHETIC_V1'):
+                raise RuntimeFault('MOCK_PLAN_BINDING')
         registry = self.store.registry()
         run_id = str(task.run_id)
         fingerprint = digest(task.payload)
@@ -177,6 +222,10 @@ class Worker:
                 raise RuntimeFault('RUN_IDENTITY_CONFLICT')
             log = self.store.registry_log(run_id)
             validate_log(task, log, self.contract)
+            if log.get('schema_version') == '1.1':
+                self.calls().validate(task, log)
+                if not controlled:
+                    raise RuntimeFault('LOG_PLAN_BINDING')
             if log.get('phase') == 'FINISHED':
                 return task, self._send(log)
             if log.get('call_status') == 'CALL_STARTED':
@@ -195,6 +244,13 @@ class Worker:
             log: dict[str, Json] = {'run_id': run_id, 'phase': 'REGISTERED', 'events': [],
                                     'request': task.request, 'call_status': None}
             self.store.save(run_id, log)
+        if controlled:
+            calls = self.calls()
+            if 'schema_version' not in log:
+                calls.initialize(task, log)
+            calls.run(task, log)
+            reason = 'EXPIRED' if task.expired(self.clock()) else 'E07_MOCK_OUTPUT'
+            return task, self._finish(task, log, reason, None)
         if task.expired():
             return task, self._finish(task, log, 'EXPIRED', None)
         if task.is_research:
@@ -222,11 +278,57 @@ class Worker:
         self.store.save(run_id, log)
         return task, self._finish(task, log, 'FAKE_FIXED_OUTPUT', 'SUCCEEDED')
 
+    def _news(self, task: NewsTask) -> bool:
+        plan, batches = news.load(task, self.mock_plan_path, self.news_catalog_path, self.contract, self.mock_plan)
+        calls = Calls(self.store, self.contract, plan,
+                      self.provider or MockProvider(plan, self.store.root / 'mock-effects.json'),
+                      self.clock, self.scheduler, self.checkpoint)
+        run_id = str(task.run_id)
+        registry = self.store.registry()
+        fingerprint = digest(task.payload)
+        if run_id in registry:
+            if registry[run_id] != fingerprint:
+                raise RuntimeFault('RUN_IDENTITY_CONFLICT')
+            log = self.store.registry_log(run_id)
+            news.validate(task, log, batches)
+            if 'schema_version' not in log:
+                if log['events'] or log['call_status'] is not None:
+                    raise RuntimeFault('NEWS_LOG_INITIALIZATION')
+                calls.initialize(task, log)
+            calls.validate(task, log)
+            for event in json_events(log['events']):
+                if not evaluate(canonical(event), contract=self.contract,
+                                context={'request': task.payload, 'received_results': [], 'usage_history': []})['accepted']:
+                    raise RuntimeFault('NEWS_LOG_CONTRACT')
+            if log['phase'] == 'FINISHED':
+                return self._send(log)
+        else:
+            if self.store.log_path(run_id).exists():
+                raise RuntimeFault('UNREGISTERED_LOG_EXISTS')
+            if task.expired(self.clock()):
+                raise news.NewsDependency('NEWS_EXPIRED')
+            registry[run_id] = fingerprint
+            atomic_json(self.store.root / 'runs.json', registry)
+            log: dict[str, Json] = {'run_id': run_id, 'phase': 'REGISTERED', 'events': [],
+                                   'request': task.request, 'call_status': None}
+            self.store.save(run_id, log)
+            calls.initialize(task, log)
+        calls.run(task, log)
+        attempts = json_events(log['calls'])
+        if not attempts or attempts[-1]['outcome'] != 'SUCCEEDED':
+            self._send(log)
+            raise news.NewsDependency('NEWS_EMBEDDING_INCOMPLETE')
+        log['events'] = json_events(log['events']) + batches
+        log['phase'] = 'FINISHED'
+        self.store.save(run_id, log)
+        return self._send(log)
+
     def _finish(self, task: Task, log: dict[str, Json], reason: str,
                 call_status: str | None) -> bool:
         results = self._research_results(task, log) if reason == 'RESEARCH' else fixed_results(task, reason)
-        events: list[dict[str, Json]] = []
-        revision = 0
+        events = json_events(log['events']) if log.get('schema_version') == '1.1' else []
+        revision = max((json_integer(json_object(event['payload'])['usage_revision'])
+                        for event in events if event['event_type'] == 'model.usage.updated.v1'), default=0)
         if call_status is not None:
             revision = 1
             call_key = str(log['call_key'])
@@ -256,6 +358,39 @@ class Worker:
         log.update(events=events, results=results, finished=final, phase='FINISHED')
         self.store.save(str(task.run_id), log)
         return self._send(log)
+
+    def reconcile_usage(self, run_id: str, call_key: str, revision: int) -> bool:
+        """补价仅追加已登记快照，不重做调用，也不修改 finished。"""
+        with self.store.exclusive():
+            registry = self.store.registry()
+            if run_id not in registry:
+                raise RuntimeFault('RUN_NOT_REGISTERED')
+            log = self.store.registry_log(run_id)
+            task = Task.parse(canonical(log['request']), self.contract)
+            if str(task.run_id) != run_id or registry[run_id] != digest(task.payload):
+                raise RuntimeFault('RUN_IDENTITY_CONFLICT')
+            match task:
+                case NewsTask():
+                    plan, batches = news.load(task, self.mock_plan_path, self.news_catalog_path, self.contract, self.mock_plan)
+                    news.validate(task, log, batches)
+                    calls = Calls(self.store, self.contract, plan,
+                        self.provider or MockProvider(plan, self.store.root / 'mock-effects.json'),
+                        self.clock, self.scheduler, self.checkpoint)
+                case Task():
+                    validate_log(task, log, self.contract)
+                    calls = self.calls()
+            calls.validate(task, log)
+            matches = [item for item in json_events(log['calls']) if item['call_key'] == call_key]
+            if (len(matches) != 1 or matches[0]['outcome'] == 'INTENT'
+                    or type(revision) is not int or not 1 <= revision <= 2147483647):
+                raise RuntimeFault('MOCK_REVISION_CALL')
+            payload = calls.plan.revision(run_id, matches[0], revision)
+            prior = [event for event in json_events(matches[0]['revisions'])
+                     if json_object(event['payload'])['usage_revision'] == revision]
+            if prior and prior[0]['payload'] != payload:
+                raise RuntimeFault('MOCK_REVISION_CONFLICT')
+            calls.append(task, log, matches[0], revision)
+            return self._send(log)
 
     def _research_results(self, task: Task, log: dict[str, Json]) -> list[dict[str, Json]]:
         """冻结计算身份后生成研究结果，复用原有事件落盘与恢复。"""
@@ -290,10 +425,14 @@ class Worker:
                 if path.exists() and read_json(path) != event:
                     raise RuntimeFault('PENDING_EVENT_CORRUPT')
                 atomic_json(path, event)
+        self.checkpoint('after_pending')
         for event in events:
             if event['event_id'] not in accepted and self.sender.send(event):
+                self.checkpoint('after_confirm')
                 accepted.append(event['event_id'])
                 log['accepted'] = accepted
                 self.store.save(str(log['run_id']), log)
                 (self.store.root / 'pending' / f"{event['event_id']}.json").unlink()
+            elif event['event_id'] in accepted:
+                (self.store.root / 'pending' / f"{event['event_id']}.json").unlink(missing_ok=True)
         return len(accepted) == len(events)
