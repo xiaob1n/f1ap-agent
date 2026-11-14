@@ -1,0 +1,11 @@
+# 排除本机虚拟环境、凭据材料、测试、文档与解释器缓存，确保构建上下文仅含锁定运行必需文件。
+.venv
+.git
+.omo
+.omc
+environment_info*
+tests
+docs
+__pycache__/
+*.pyc
+.uv_cache

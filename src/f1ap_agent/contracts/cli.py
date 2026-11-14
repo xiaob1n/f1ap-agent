@@ -131,13 +131,23 @@ def run(contract, report, roundtrip_out, roundtrip_in=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     agent_root = Path(__file__).resolve().parents[3]
-    parser.add_argument('--lock', type=Path, default=agent_root / 'contracts.lock.json')
+    parser.add_argument('--lock', type=Path, default=None)
     parser.add_argument('--contracts', type=Path)
     parser.add_argument('--report', type=Path, required=True)
     parser.add_argument('--roundtrip-out', type=Path, required=True)
     parser.add_argument('--roundtrip-in', type=Path)
     args = parser.parse_args()
     try:
+        if args.contracts is None and args.lock is None:
+            contracts_dir = os.environ.get('F1AP_CONTRACTS_DIR', '')
+            contracts_lock = os.environ.get('F1AP_CONTRACTS_LOCK', '')
+            if bool(contracts_dir) != bool(contracts_lock):
+                raise ValueError('CONTRACTS_ENV_PAIR_REQUIRED')
+            if contracts_dir:
+                args.contracts = Path(contracts_dir)
+                args.lock = Path(contracts_lock)
+        if args.lock is None:
+            args.lock = agent_root / 'contracts.lock.json'
         if args.contracts is None:
             lock = parse(args.lock.read_bytes())
             args.contracts = (args.lock.parent / lock['source']).resolve()

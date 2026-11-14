@@ -113,6 +113,16 @@ class Store:
             raise RuntimeFault('REGISTRY_CORRUPT')
         return value
 
+    def ensure_initialized(self) -> dict[str, Json]:
+        """仅新空卷初始化，历史注册表和全部现存日志必须可校验。"""
+        if not self.root.exists() or not any(self.root.iterdir()):
+            self.initialize()
+            return {}
+        registry = self.registry()
+        for run_id in set(registry) | {path.parent.name for path in self.root.glob('runs/*/log.json')}:
+            _ = self.registry_log(run_id)
+        return registry
+
     def log_path(self, run_id: str) -> Path:
         return self.root / 'runs' / run_id / 'log.json'
 

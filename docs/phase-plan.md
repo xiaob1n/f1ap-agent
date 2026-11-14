@@ -119,13 +119,13 @@ Agent 不采集官方题目/答案、不提交官网、不直接向前端推送�
 
 ## 10. B7：部署与恢复
 
-拟建 `Dockerfile`、`docs/runbook.md`，统一 Compose 由 API A7 管理。
+已适配 2026-11-13 E07 基线，契约 `1.0.2`、MOCK。[Dockerfile](../Dockerfile) 和 [运维手册](runbook.md) 配合 API A7 的双应用 Compose，真实远端执行仍待 Task11。
 
-1. 固定镜像与依赖，环境注入配置，不接 Nacos；不挂载 API 含 Answer 的原始文件卷。
-2. 持久保存 Chroma、新闻、特征清单、执行日志及待发事件，明确资源限制、备份和停止行为；健康检查不调用模型。
-3. 获准后演练进程中断、MQ 断连、未知成本、索引备份恢复、旧 run 拒收和供应商错误；状态损坏失败关闭，不重新执行旧收费调用。
+1. 干净 Python 3.12 与锁定依赖闭包，非 root `10001:10001`、UTC。不接 Nacos/MySQL/Redis，不挂 API 含 Answer 的原始文件卷；基础镜像摘要待远端冻结。
+2. 持久保存 runtime JSON、调用意图、pending/accepted 和观察输出，使用可控 mock 输入替代历史 Chroma/新闻爬虫持久化口径。不恢复 Chroma/RAG、真实 Embedding 或生成融合。先持久日志及确认回包，再写两份 output，最后 ACK；订阅级探针无网络和模型调用。
+3. `--ensure-runtime` 复用合法非空卷，损坏失败关闭；SIGTERM 默认排空 30 秒，Compose stop 35 秒。停写一致备份不是 DB/Broker 灾备，外部 DB 领先时禁止初始化空 Store；UNKNOWN 对账不重做副作用，不按成本停机。
 
-**验收**：重建不丢索引/日志；单写进程约束成立；晚到费用可对账；无匿名 Agent 公网入口；恢复证据真实可复查。
+**验收**：Task9 仅文档与静态核验。Task11 尚须实操启停、单写者、断连、SIGKILL、待发恢复、输出先于 ACK、晚到费用和停写备份恢复；未执行项不记 PASS，正式官方 LIVE 为 `NOT_VERIFIED`。
 
 ## 11. 完成记录
 

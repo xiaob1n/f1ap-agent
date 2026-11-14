@@ -5,13 +5,15 @@ import os
 import sys
 import hashlib
 import re
+import math
 from typing import Final
 from pathlib import Path
 
 import aio_pika
 
 from f1ap_agent.messaging import LocalSender
-from f1ap_agent.messaging.consumer import ConnectionConfig, connect_and_consume
+from f1ap_agent.messaging.consumer import ConnectionConfig, DrainTimeout, connect_and_consume
+from f1ap_agent.messaging.health import Health, check_health
 from f1ap_agent.runtime import RuntimeFault, Store
 from f1ap_agent.worker.engine import FakeExecutor, Worker
 from f1ap_agent.worker.models import load_contract
@@ -27,7 +29,7 @@ class Options(argparse.Namespace):
     """命令行解析结果的确定类型。"""
     run: bool = False
     runtime_dir: Path = Path()
-    output: Path = Path()
+    output: Path | None = None
     max_messages: int = 0
     delivery_timeout: float = 30.0
     confirm_timeout: float = 10.0
@@ -39,6 +41,13 @@ class Options(argparse.Namespace):
     mock_revisions: Path | None = None
     mock_scenario: str | None = None
     reconcile_usage: str | None = None
+    daemon: bool = False
+    ensure_runtime: bool = False
+    healthcheck: bool = False
+    require_ready: bool = False
+    health_file: Path | None = None
+    wait_topology_seconds: float = 60.0
+    shutdown_timeout: float = 30.0
 
 
 def connection_config() -> ConnectionConfig:
@@ -73,7 +82,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, epilog='环境变量：' + ', '.join(ENV_KEYS))
     _ = parser.add_argument('--run', action='store_true')
     _ = parser.add_argument('--runtime-dir', type=Path, required=True)
-    _ = parser.add_argument('--output', type=Path, required=True)
+    _ = parser.add_argument('--output', type=Path)
+    _ = parser.add_argument('--daemon', action='store_true')
+    _ = parser.add_argument('--ensure-runtime', action='store_true')
+    _ = parser.add_argument('--healthcheck', action='store_true')
+    _ = parser.add_argument('--require-ready', action='store_true')
+    _ = parser.add_argument('--health-file', type=Path)
+    _ = parser.add_argument('--wait-topology-seconds', type=float, default=60.0)
+    _ = parser.add_argument('--shutdown-timeout', type=float, default=30.0)
     _ = parser.add_argument('--max-messages', type=int, default=0)
     _ = parser.add_argument('--delivery-timeout', type=float, default=30.0)
     _ = parser.add_argument('--confirm-timeout', type=float, default=10.0)
@@ -87,7 +103,24 @@ def main() -> int:
     _ = parser.add_argument('--reconcile-usage', metavar='RUN_ID:CALL_KEY:REVISION',
         help='仅执行一次已登记用量补价；要求 --run、--mock-plan、--mock-revisions、--mock-scenario 及计划绑定的 --news-catalog')
     args = parser.parse_args(namespace=Options())
+    health: Health | None = None
     try:
+        if (args.max_messages < 0 or any(not math.isfinite(value) or value <= 0 for value in
+                (args.delivery_timeout, args.confirm_timeout, args.wait_topology_seconds, args.shutdown_timeout))):
+            raise RuntimeFault('INVALID_LIMITS')
+        health_path = args.health_file or args.runtime_dir / '.agent-health.json'
+        if args.healthcheck:
+            if args.run or args.daemon or args.init_runtime or args.ensure_runtime:
+                raise RuntimeFault('HEALTHCHECK_ARGUMENTS')
+            return check_health(health_path, args.require_ready)
+        if args.output is None or args.require_ready or (args.daemon and not args.run):
+            raise RuntimeFault('OUTPUT_OR_RUN_REQUIRED')
+        if args.init_runtime and args.ensure_runtime:
+            raise RuntimeFault('RUNTIME_ARGUMENTS')
+        args.mock_plan = args.mock_plan or (Path(os.environ['F1AP_E07_MOCK_PLAN_FILE'])
+            if os.environ.get('F1AP_E07_MOCK_PLAN_FILE') else None)
+        args.news_catalog = args.news_catalog or (Path(os.environ['F1AP_E07_NEWS_CATALOG_FILE'])
+            if os.environ.get('F1AP_E07_NEWS_CATALOG_FILE') else None)
         target = reconciliation(args.reconcile_usage) if args.reconcile_usage is not None else None
         if target is not None:
             if not args.run:
@@ -102,10 +135,10 @@ def main() -> int:
             raise RuntimeFault('RECONCILE_MOCK_PLAN_REQUIRED')
         if args.max_messages < 0 or args.delivery_timeout <= 0 or args.confirm_timeout <= 0:
             raise RuntimeFault('INVALID_LIMITS')
-        config = connection_config()
-        contract = load_contract()
         if (args.mock_plan is None) != (args.news_catalog is None):
             raise RuntimeFault('NEWS_FILES_REQUIRED')
+        config = connection_config()
+        contract = load_contract()
         plan = None
         if args.mock_plan is not None and args.news_catalog is not None:
             raw = args.mock_plan.read_bytes()
@@ -128,19 +161,41 @@ def main() -> int:
             print('CONFIG_VALID; network disabled without --run')
             return 0
         store = Store(runtime)
+        health = Health(health_path)
+        # 首次初始化必须先于状态文件，否则健康文件会把空卷变为非空卷。
         if args.init_runtime:
             store.initialize()
+        if args.ensure_runtime:
+            _ = store.ensure_initialized()
         _ = store.registry()
+        health.update('STARTING')
         worker = Worker(store, contract, FakeExecutor(runtime / 'fake-executor.json'), LocalSender(runtime), args.mapping,
                         mock_plan=plan, provider=MockProvider(plan, runtime / 'mock-effects.json') if plan else None,
                         mock_plan_path=args.mock_plan, news_catalog_path=args.news_catalog)
-        return asyncio.run(connect_and_consume(worker, config, 'f1ap.agent.tasks.v1', output,
-                            args.max_messages, args.delivery_timeout, args.confirm_timeout,
-                            args.existing_topology, target))
+        # 排空超时不能使用 asyncio.run 的无限 executor join；由进程入口强制退出。
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(connect_and_consume(worker, config, 'f1ap.agent.tasks.v1', output,
+                args.max_messages, args.delivery_timeout, args.confirm_timeout, args.existing_topology,
+                target, daemon=args.daemon, health=health, wait_topology_seconds=args.wait_topology_seconds,
+                shutdown_timeout=args.shutdown_timeout))
+            loop.run_until_complete(loop.shutdown_default_executor())
+            health.update('DRAINING' if result == 0 else 'FAILED')
+            return result
+        finally:
+            loop.close()
+    except DrainTimeout:
+        # console_scripts 和 python -m 共用该边界，超时不再等待线程池退出。
+        os._exit(1)
     except (RuntimeFault, Rejection, ValueError) as error:
-        print(str(error), file=sys.stderr)
+        if health is not None:
+            health.update('FAILED')
+        code = error.code if isinstance(error, RuntimeFault) else 'INVALID_CONFIGURATION'
+        print(code if re.fullmatch(r'[A-Z0-9_:,]+', code) else 'INVALID_CONFIGURATION', file=sys.stderr)
         return 2
     except (aio_pika.exceptions.AMQPException, OSError, TimeoutError):
+        if health is not None:
+            health.update('FAILED')
         print('BROKER_OR_STORAGE_FAILURE', file=sys.stderr)
         return 1
 
