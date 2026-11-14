@@ -46,9 +46,15 @@ class Task:
         return json_object(self.request['payload'])
 
     @property
+    def is_llm(self) -> bool:
+        """独立模型任务与统计研究任务使用不同执行分支。"""
+        return json_string(json_object(self.payload['profile'])['algorithm_version']).startswith('LLM_PREDICT_V1@')
+
+    @property
     def is_research(self) -> bool:
         """研究任务不允许调用模型或外部服务。"""
-        return self.payload['purpose'] == 'RESEARCH' and self.payload['fixture_class'] == 'CONTROLLED_INPUT'
+        return (self.payload['purpose'] == 'RESEARCH' and self.payload['fixture_class'] == 'CONTROLLED_INPUT'
+                and not self.is_llm)
 
     @property
     def fixture_class(self) -> str:
@@ -60,7 +66,8 @@ class Task:
         """从算法版本读取 mapping 原始字节摘要。"""
         algorithm = json_object(self.payload['profile'])['algorithm_version']
         value = json_string(algorithm)
-        prefix = 'TEN_QUESTION_GRAPH_V1@' if value.startswith('TEN_QUESTION_GRAPH_V1@') else 'PODIUM_PACE_BOOTSTRAP_V1@'
+        prefix = ('LLM_PREDICT_V1@' if self.is_llm else
+                  'TEN_QUESTION_GRAPH_V1@' if value.startswith('TEN_QUESTION_GRAPH_V1@') else 'PODIUM_PACE_BOOTSTRAP_V1@')
         if not value.startswith(prefix) or len(value) != len(prefix) + 64:
             raise RuntimeFault('RESEARCH_MAPPING_VERSION')
         check_format('f1ap-sha256', value.removeprefix(prefix), '/payload/profile/algorithm_version')
@@ -86,6 +93,9 @@ class Task:
             raise RuntimeFault('B1_REQUIRES_PREDICTION_REQUEST')
         fixture_class = json_string(payload['fixture_class'])
         purpose = json_string(payload['purpose'])
+        algorithm = json_string(json_object(payload['profile'])['algorithm_version'])
+        if algorithm.startswith('LLM_PREDICT_V1@') and fixture_class != 'CONTROLLED_INPUT':
+            raise RuntimeFault('LLM_REQUIRES_CONTROLLED_INPUT')
         if fixture_class == 'CONTROLLED_INPUT' and purpose != 'RESEARCH':
             raise RuntimeFault('B1_REQUIRES_RESEARCH_CONTROLLED_INPUT')
         if fixture_class not in ('TEST_FIXTURE', 'CONTROLLED_INPUT'):
@@ -93,15 +103,18 @@ class Task:
         if fixture_class == 'CONTROLLED_INPUT':
             profile = json_object(payload['profile'])
             algorithm = json_string(profile['algorithm_version'])
+            llm = algorithm.startswith('LLM_PREDICT_V1@')
             e05 = algorithm.startswith('TEN_QUESTION_GRAPH_V1@')
-            prefix = 'TEN_QUESTION_GRAPH_V1@' if e05 else 'PODIUM_PACE_BOOTSTRAP_V1@'
+            prefix = 'LLM_PREDICT_V1@' if llm else 'TEN_QUESTION_GRAPH_V1@' if e05 else 'PODIUM_PACE_BOOTSTRAP_V1@'
             strategies: list[Json] = [{'strategy': 'EXPECTED_POINTS', 'version': 'EXPECTED_POINTS_V1'}]
             if e05:
                 strategies.append({'strategy': 'HIT_RATE', 'version': 'HIT_RATE_V1'})
-            if (profile['tools'] != ['OPENF1_READ'] or profile['model_config_ref'] != 'NO_MODEL'
+            if (profile['tools'] != ['OPENF1_READ']
+                or profile['model_config_ref'] != ('DEEPSEEK_FLASH_V1' if llm else 'NO_MODEL')
                 or profile['price_version'] != 'NOT_APPLICABLE'
                 or profile['strategies'] != strategies
-                or not algorithm.startswith(prefix)):
+                or not algorithm.startswith(prefix)
+                or (llm and (payload['call_limit'] != 1 or payload['max_attempts'] != 1))):
                 raise RuntimeFault('RESEARCH_PROFILE')
             check_format('f1ap-sha256', algorithm.removeprefix(prefix), '/payload/profile/algorithm_version')
         stamp = now or json_string(payload['data_cutoff_at'])

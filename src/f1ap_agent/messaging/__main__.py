@@ -18,6 +18,7 @@ from f1ap_agent.runtime import RuntimeFault, Store
 from f1ap_agent.worker.engine import FakeExecutor, Worker
 from f1ap_agent.worker.models import load_contract
 from f1ap_agent.models.mock import MockPlan, MockProvider
+from f1ap_agent.models.deepseek import DeepSeek
 from f1ap_agent.contracts.artifact import check_format
 from f1ap_agent.contracts.verifier import Rejection
 
@@ -48,6 +49,7 @@ class Options(argparse.Namespace):
     health_file: Path | None = None
     wait_topology_seconds: float = 60.0
     shutdown_timeout: float = 30.0
+    llm_config: Path | None = None
 
 
 def connection_config() -> ConnectionConfig:
@@ -95,6 +97,7 @@ def main() -> int:
     _ = parser.add_argument('--confirm-timeout', type=float, default=10.0)
     _ = parser.add_argument('--init-runtime', action='store_true')
     _ = parser.add_argument('--mapping', type=Path)
+    _ = parser.add_argument('--llm-config', type=Path, help='Agent 本地 DeepSeek TOML 配置')
     _ = parser.add_argument('--existing-topology', action='store_true')
     _ = parser.add_argument('--mock-plan', type=Path)
     _ = parser.add_argument('--news-catalog', type=Path)
@@ -139,6 +142,7 @@ def main() -> int:
             raise RuntimeFault('NEWS_FILES_REQUIRED')
         config = connection_config()
         contract = load_contract()
+        llm_provider = DeepSeek.load(args.llm_config) if args.llm_config is not None else None
         plan = None
         if args.mock_plan is not None and args.news_catalog is not None:
             raw = args.mock_plan.read_bytes()
@@ -171,7 +175,8 @@ def main() -> int:
         health.update('STARTING')
         worker = Worker(store, contract, FakeExecutor(runtime / 'fake-executor.json'), LocalSender(runtime), args.mapping,
                         mock_plan=plan, provider=MockProvider(plan, runtime / 'mock-effects.json') if plan else None,
-                        mock_plan_path=args.mock_plan, news_catalog_path=args.news_catalog)
+                        mock_plan_path=args.mock_plan, news_catalog_path=args.news_catalog,
+                        llm_provider=llm_provider)
         # 排空超时不能使用 asyncio.run 的无限 executor join；由进程入口强制退出。
         loop = asyncio.new_event_loop()
         try:

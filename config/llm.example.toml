@@ -1,0 +1,5 @@
+# 复制为本地配置；密钥仅通过此环境变量注入，不写入配置文件。
+model = "deepseek-flash"
+api_key_env = "DEEPSEEK_API_KEY"
+timeout_seconds = 120
+max_tokens = 8192
