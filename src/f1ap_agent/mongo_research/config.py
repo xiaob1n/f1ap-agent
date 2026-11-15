@@ -26,7 +26,11 @@ class Config:
     def load(cls, path: Path) -> 'Config':
         with path.open('rb') as stream:
             raw: Json = tomllib.load(stream)
-        values = json_object(raw)
+        return cls.from_config(json_object(raw))
+
+    @classmethod
+    def from_config(cls, values: dict[str, Json]) -> 'Config':
+        """本地文件和启动配置共用同一校验。"""
         if set(values) != set(cls.__dataclass_fields__):
             raise RuntimeFault('CONFIG_FIELDS')
         bounds = {'timeout_seconds': 300, 'max_model_rounds': 30,

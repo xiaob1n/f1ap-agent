@@ -24,6 +24,11 @@ class DeepSeek:
     def load(cls, path: Path) -> 'DeepSeek':
         with path.open('rb') as stream:
             config = json_object(parse(json.dumps(tomllib.load(stream)).encode('utf-8')))
+        return cls.from_config(config)
+
+    @classmethod
+    def from_config(cls, config: dict[str, Json]) -> 'DeepSeek':
+        """本地文件和启动配置共用同一校验。"""
         if set(config) != {'model', 'api_key_env', 'timeout_seconds', 'max_tokens'}:
             raise RuntimeFault('LLM_CONFIG_FIELDS')
         if config['model'] != 'deepseek-flash':

@@ -3,7 +3,7 @@
 > init-deep 评分 10/17：文件数>20×3、自有 pyproject×1、模块边界×2、符号密度×2、导出×2；代码占比未测量、不计分；子目录数未过 >5 阈值、引用中心度未测量。独立域：单进程 Python Worker 仓库。包内代码结构见 src/f1ap_agent/AGENTS.md。本文件自足可用；本地工作区另有根 AGENTS.md 汇总跨仓共享规则，存在时作补充参考。
 
 ## OVERVIEW
-Python 3.12（uv + hatchling）单进程 Worker：消费 f1ap.agent.tasks.v1，固定图计算十题预测并回发事件；自带与 Java 端语义一致、代码独立的契约校验器。运行依赖仅 aio-pika/httpx/jsonschema/langgraph（pyproject.toml）。本仓库不连 MySQL/Nacos/Redis。
+Python 3.12（uv + hatchling）单进程 Worker：消费 f1ap.agent.tasks.v1，固定图计算十题预测并回发事件；自带与 Java 端语义一致、代码独立的契约校验器。不连 MySQL/Redis；正式 Agent 入口可在启动时一次读取 Nacos 配置，见 docs/nacos.md（覆盖旧版“不连 Nacos”限制）。
 
 ## WHERE TO LOOK
 | 任务 | 位置 |
@@ -19,7 +19,7 @@ Python 3.12（uv + hatchling）单进程 Worker：消费 f1ap.agent.tasks.v1，�
 布局：src/f1ap_agent/（业务代码，另有指南）、config/、docs/（*evidence* 目录被 gitignore）、tests/（gitignore，仅 2 个文件）、.venv/、uv.lock。
 
 ## CONVENTIONS
-- 凭据只经环境变量：F1AP_RABBITMQ_HOST/PORT/VHOST/USERNAME/PASSWORD、F1AP_INTERNAL_WRITE_TOKEN、DEEPSEEK_API_KEY、F1AP_WEBSEARCH_MCP_URL（本地 websearch 补充用）；密钥不进配置文件与日志。
+- Nacos 引导凭据只经环境变量；正式入口可从 Nacos 内存配置读取业务凭据，完整校验后仅注入固定环境键，不落盘、不记录正文或密钥。无 Nacos 引导时保持原本本地文件与环境变量路径；停用的 question_sync/websearch 不接入。
 - 落盘一律 atomic_json（临时文件+替换）；跨进程状态用 runtime 的 Store.exclusive() 文件锁。
 - 容器以非 root 10001:10001、TZ=UTC 运行。
 - pyproject.toml 的 description 是历史文案（"E01 offline contract verification only"），与实际能力不符，勿据此判断。

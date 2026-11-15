@@ -1,0 +1,34 @@
+# Nacos Data ID: f1ap-agent.toml。此示例不含秘密，空凭据故意不能通过校验。
+# 在 Nacos 服务端填入真实值；Agent 不保存拉取内容。
+[model]
+model = "deepseek-flash"
+api_key_env = "DEEPSEEK_API_KEY"
+timeout_seconds = 120
+max_tokens = 8192
+
+[research]
+timeout_seconds = 60
+max_model_rounds = 6
+max_tokens = 4096
+row_limit = 100
+byte_limit = 65536
+
+[mq]
+delivery_timeout = 30
+confirm_timeout = 10
+wait_topology_seconds = 60
+shutdown_timeout = 30
+
+[paths]
+runtime_dir = "runtime"
+# 空字符串表示不设置候选映射；相对路径以启动工作目录为基准。
+mapping = ""
+
+[secrets]
+F1AP_RABBITMQ_HOST = ""
+F1AP_RABBITMQ_PORT = "5672"
+F1AP_RABBITMQ_VHOST = ""
+F1AP_RABBITMQ_USERNAME = ""
+F1AP_RABBITMQ_PASSWORD = ""
+DEEPSEEK_API_KEY = ""
+MDB_MCP_CONNECTION_STRING = ""

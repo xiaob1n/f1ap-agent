@@ -9,4 +9,5 @@ docs/*evidence*
 .idea/
 .env
 /.env.mongo-research.local
+/.env.nacos.local
 /.local/mongodb-mcp/
