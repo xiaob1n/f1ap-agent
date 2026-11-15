@@ -1,0 +1,7 @@
+# 本机独立研究配置；凭据固定读取 MDB_MCP_CONNECTION_STRING、DEEPSEEK_API_KEY。
+# 从 Agent 根目录 source .env.mongo-research.local 前先 set -a，加载后 set +a。
+timeout_seconds = 60
+max_model_rounds = 6
+max_tokens = 4096
+row_limit = 100
+byte_limit = 65536

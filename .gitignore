@@ -8,3 +8,5 @@ docs/*evidence*
 .omo/
 .idea/
 .env
+/.env.mongo-research.local
+/.local/mongodb-mcp/
