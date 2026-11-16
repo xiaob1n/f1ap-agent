@@ -31,6 +31,7 @@ class Model:
             'input_tokens': None, 'output_tokens': None, 'cost': None, 'cost_status': 'UNKNOWN'}
         body = {'model': 'deepseek-flash', 'stream': False,
                 'thinking': {'type': 'disabled'}, 'max_tokens': self.config.max_tokens,
+                'response_format': {'type': 'json_object'},
                 'messages': messages, 'tools': [TOOL],
                 'tool_choice': 'none' if round_no == self.config.max_model_rounds else 'auto',
                 'parallel_tool_calls': False}
