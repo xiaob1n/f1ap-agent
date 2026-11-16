@@ -53,13 +53,12 @@ async def research(request: Request, config: Config, session: ClientSession,
                        '每项必须含 source_question_id、status、picks、explanation、evidence_ids。'
                        'status 为 PREDICTED 或 DATA_INSUFFICIENT；picks 是原始 option_key 字符串数组，'
                        '数量遵守 min_picks/max_picks，有序题按名次排列，不能重复。'
-                       '计分规则 BLOCKED 不阻止研究预测，不使用 points、expected_score 或积分优化，'
-                       '不要假装规则已验证。依据不足时 status=DATA_INSUFFICIENT、picks=[]，逐题解释不足。'
+                       '依据不足时 status=DATA_INSUFFICIENT、picks=[]，逐题解释不足。'
                        'explanation 每题最多2000字，evidence_ids 最多32个实际查询编号；'
                        'limitations 最多20条、每条最多500字。所选会话仅作历史参考，不是目标分站。')
             model_definition = {**definition, 'questions': [{
                 'source_question_id': q['source_question_id'], 'text': q['text'], 'value_kind': q['value_kind'],
-                'options': [{k: v for k, v in option.items() if k != 'points'} for option in json_events(q['options'])],
+                'options': q['options'],
                 'rule': {k: json_object(q['rule'])[k] for k in ('min_picks', 'max_picks', 'ordered')},
             } for q in json_events(definition['questions'])]}
         return {**state, 'messages': [{'role': 'system', 'content': prompt},

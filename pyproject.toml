@@ -17,5 +17,6 @@ f1ap-contract-verify = "f1ap_agent.contracts.cli:main"
 f1ap-agent-mq = "f1ap_agent.messaging.__main__:main"
 f1ap-agent-mq-integration = "f1ap_agent.messaging.integration:main"
 f1ap-mongo-research = "f1ap_agent.mongo_research.__main__:main"
+f1ap-question-sync = "f1ap_agent.question_sync:main"
 
 

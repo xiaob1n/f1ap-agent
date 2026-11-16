@@ -5,14 +5,14 @@ from typing import Final
 from uuid import NAMESPACE_URL, uuid5
 
 from f1ap_agent.contracts.artifact import Contract, check_format
-from f1ap_agent.contracts.verifier import canonical, digest, evaluate, parse
+from f1ap_agent.contracts.verifier import digest, parse
+from f1ap_agent.contracts.answers import VERSION, definition as answer_definition
 from f1ap_agent.runtime import (
     Json, RuntimeFault, json_array, json_events, json_integer, json_object, json_string,
 )
 
-VERSION: Final = 'UNSCORED_RESEARCH_V1'
-REQUESTED: Final = 'unscored.research.requested.v1'
-COMPLETED: Final = 'unscored.research.completed.v1'
+REQUESTED: Final = 'prediction.answers.requested.v2'
+COMPLETED: Final = 'prediction.answers.completed.v2'
 
 
 def stamp(value: Json) -> datetime:
@@ -50,11 +50,7 @@ class ResearchTask:
         check_format('f1ap-uuid', request_id, '/request_id')
         for key in ('run_id', 'round_id'):
             check_format('f1ap-id', json_string(payload[key]), '/' + key)
-        definition = json_object(payload['definition'])
-        verdict = evaluate(canonical({'definition': definition}),
-                           kind='definition_projection', contract=contract)
-        if not verdict['accepted']:
-            raise RuntimeFault('UNSCORED_DEFINITION_INVALID')
+        definition = answer_definition(payload['definition'])
         questions = json_events(definition['questions'])
         if (definition['round_id'] != payload['round_id'] or len(questions) != 10
                 or len({json_string(q['source_question_id']) for q in questions}) != 10

@@ -5,13 +5,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Protocol, TypedDict
-
-from langgraph.graph import END, START, StateGraph
+from typing import Protocol
 
 from f1ap_agent.contracts.artifact import Contract
 from f1ap_agent.contracts.verifier import canonical, digest, evaluate
-from f1ap_agent.worker.research import bind, compute, results as research_results
 from f1ap_agent.messaging import Sender
 from f1ap_agent.runtime import (
     Json, RuntimeFault, Store, atomic_json, json_events, json_object, json_array, json_integer, read_json, json_string,
@@ -22,15 +19,7 @@ from f1ap_agent.contracts.artifact import check_format
 from f1ap_agent.models.calls import Calls
 from f1ap_agent.models.mock import MockPlan, MockProvider, Provider
 from f1ap_agent.models.deepseek import DeepSeek
-from f1ap_agent.worker import llm
 from f1ap_agent.mongo_research.config import Config as ResearchConfig
-
-
-class LlmState(TypedDict):
-    prompt: str
-    evidence: list[dict[str, Json]]
-    reason: str
-    results: list[dict[str, Json]]
 
 
 def validate_log(task: Task, log: dict[str, Json], contract: Contract) -> None:
@@ -220,6 +209,8 @@ class Worker:
                 return self._predict(task)
 
     def _predict(self, task: Task) -> tuple[Task, bool]:
+        if task.is_research:
+            raise RuntimeFault('PREDICTION_V1_RETIRED_USE_ANSWERS_V2')
         profile = json_object(task.payload['profile'])
         controlled = json_string(profile['model_config_ref']).startswith('E07_MOCK_')
         if controlled:
@@ -242,8 +233,6 @@ class Worker:
                     raise RuntimeFault('LOG_PLAN_BINDING')
             if log.get('phase') == 'FINISHED':
                 return task, self._send(log)
-            if task.is_llm:
-                return task, self._llm(task, log)
             if log.get('call_status') == 'CALL_STARTED':
                 return task, self._finish(task, log, 'CALL_UNKNOWN', 'UNKNOWN')
             if log.get('call_status') == 'SUCCEEDED':
@@ -260,8 +249,6 @@ class Worker:
             log: dict[str, Json] = {'run_id': run_id, 'phase': 'REGISTERED', 'events': [],
                                     'request': task.request, 'call_status': None}
             self.store.save(run_id, log)
-        if task.is_llm:
-            return task, self._llm(task, log)
         if controlled:
             calls = self.calls()
             if 'schema_version' not in log:
@@ -271,8 +258,6 @@ class Worker:
             return task, self._finish(task, log, reason, None)
         if task.expired():
             return task, self._finish(task, log, 'EXPIRED', None)
-        if task.is_research:
-            return task, self._finish(task, log, 'RESEARCH', None)
         profile = json_object(task.payload['profile'])
         if task.fixture_class == 'TEST_FIXTURE' and profile['algorithm_version'] == 'E06_SYNTHETIC_V1':
             expected: dict[str, Json] = {
@@ -341,82 +326,11 @@ class Worker:
         self.store.save(run_id, log)
         return self._send(log)
 
-    def _llm(self, task: Task, log: dict[str, Json]) -> bool:
-        """图编排输入、模型与校验；调用恢复仍以 Worker 持久记录为准。"""
-        def prepare(state: LlmState) -> LlmState:
-            if 'llm' in log:
-                return state
-            if task.expired(self.clock()):
-                return {**state, 'reason': 'EXPIRED'}
-            if self.llm_provider is None:
-                raise RuntimeFault('LLM_CONFIG_REQUIRED')
-            # 在登记调用前确认凭据，配置错误不能消耗一次调用机会。
-            import os
-            if not os.environ.get(self.llm_provider.api_key_env):
-                raise RuntimeFault('LLM_API_KEY_MISSING')
-            text, evidence = llm.prompt(task, self.mapping_path)
-            if not any(json_object(q['rule'])['verification'] == 'VERIFIED'
-                       for q in json_events(json_object(task.payload['definition'])['questions'])):
-                return {**state, 'reason': 'RULE_BLOCKED'}
-            return {**state, 'prompt': text, 'evidence': evidence}
-
-        def generate(state: LlmState) -> LlmState:
-            if 'llm' in log:
-                saved = json_object(log['llm'])
-                if saved['response'] is None:
-                    saved['response'] = {'status': 'UNKNOWN', 'reason': 'LLM_CALL_UNKNOWN',
-                                         'input_tokens': 0, 'output_tokens': 0, 'content': None}
-                    log['call_status'] = 'UNKNOWN'
-                    self.store.save(str(task.run_id), log)
-                return state
-            remaining = (task.expires_at - self.clock()).total_seconds()
-            if remaining <= 0:
-                return {**state, 'reason': 'EXPIRED'}
-            if self.llm_provider is None:
-                raise RuntimeFault('LLM_CONFIG_REQUIRED')
-            stamp = self.clock().isoformat(timespec='milliseconds').replace('+00:00', 'Z')
-            log.update(call_status='CALL_STARTED', call_key=str(uuid.uuid5(uuid.NAMESPACE_URL,
-                       f'f1ap-e07:{task.run_id}:llm:1')),
-                       call_started_at=stamp, llm={'prompt_sha256': digest(state['prompt']), 'evidence': state['evidence'],
-                                                  'response': None})
-            self.store.save(str(task.run_id), log)
-            self.checkpoint('llm_after_intent')
-            response = self.llm_provider.generate(state['prompt'], remaining)
-            saved = json_object(log['llm'])
-            saved['response'] = response
-            log['call_status'] = response['status']
-            self.store.save(str(task.run_id), log)
-            self.checkpoint('llm_after_response')
-            return state
-
-        def validate(state: LlmState) -> LlmState:
-            reason = state['reason']
-            if reason == 'LLM' and task.expired(self.clock()):
-                reason = 'EXPIRED'
-            if reason != 'LLM':
-                return {**state, 'reason': reason, 'results': fixed_results(task, reason)}
-            saved = json_object(log['llm'])
-            return {**state, 'results': llm.results(task, self.contract,
-                json_object(saved['response']), json_events(saved['evidence']))}
-
-        graph = StateGraph(LlmState)
-        graph.add_node('prepare', prepare)
-        graph.add_node('generate', generate)
-        graph.add_node('validate', validate)
-        graph.add_edge(START, 'prepare')
-        graph.add_conditional_edges('prepare', lambda state: 'generate' if state['reason'] == 'LLM' else 'validate',
-                                    {'generate': 'generate', 'validate': 'validate'})
-        graph.add_edge('generate', 'validate')
-        graph.add_edge('validate', END)
-        initial: LlmState = {'prompt': '', 'evidence': [], 'reason': 'LLM', 'results': []}
-        output = graph.compile().invoke(initial)
-        status = json_string(log['call_status']) if log['call_status'] is not None else None
-        return self._finish(task, log, json_string(output['reason']), status, json_events(output['results']))
 
     def _finish(self, task: Task, log: dict[str, Json], reason: str,
                 call_status: str | None, results: list[dict[str, Json]] | None = None) -> bool:
         if results is None:
-            results = self._research_results(task, log) if reason == 'RESEARCH' else fixed_results(task, reason)
+            results = fixed_results(task, reason)
         events = json_events(log['events']) if log.get('schema_version') == '1.1' else []
         revision = max((json_integer(json_object(event['payload'])['usage_revision'])
                         for event in events if event['event_type'] == 'model.usage.updated.v1'), default=0)
@@ -487,26 +401,6 @@ class Worker:
             calls.append(task, log, matches[0], revision)
             return self._send(log)
 
-    def _research_results(self, task: Task, log: dict[str, Json]) -> list[dict[str, Json]]:
-        """冻结计算身份后生成研究结果，复用原有事件落盘与恢复。"""
-        config = bind(task, self.mapping_path)
-        identity: dict[str, Json] = {'mapping_sha256': task.mapping_sha256,
-            'manifest_sha256': config.manifest_sha256, 'data_cutoff_at': task.payload['data_cutoff_at']}
-        if 'research' in log and log['research'] != identity:
-            raise RuntimeFault('RESEARCH_IDENTITY_CONFLICT')
-        log['research'] = identity
-        self.store.save(str(task.run_id), log)
-        if json_string(json_object(task.payload['profile'])['algorithm_version']).startswith('TEN_QUESTION_GRAPH_V1@'):
-            from f1ap_agent.graph import run
-            return run(task, config)
-        research = compute(task, config)
-        results = research_results(task, research)
-        if research.features is not None and research.baseline is not None:
-            atomic_json(self.store.root / 'runs' / str(task.run_id) / 'research.json', {
-                'identity': identity, 'features': {key: list(values) for key, values in research.features.laps},
-                'counts': {item.option_key: list(item.counts) for item in research.baseline.marginals},
-                'method': 'PODIUM_PACE_BOOTSTRAP_V1', 'seed': 0, 'samples': 10000, 'laps_per_sample': 5})
-        return results
 
     def _send(self, log: dict[str, Json]) -> bool:
         """Persist every pending event before the first local acceptance attempt."""

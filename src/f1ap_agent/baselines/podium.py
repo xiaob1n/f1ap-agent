@@ -1,5 +1,4 @@
 """PODIUM_PACE_BOOTSTRAP_V1 的纯本地计算。"""
-import itertools
 import random
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -55,25 +54,3 @@ def bootstrap(laps: Mapping[str, Sequence[int]]) -> Bootstrap:
         rankings.append(tuple(key for _, key in ranking))
     return Bootstrap(tuple(Marginal(key, (counts[key][0], counts[key][1], counts[key][2]))
                            for key in options), rankings=tuple(rankings))
-
-
-def optimal_podium(result: Bootstrap, points: Mapping[str, Decimal], exact_multiplier: Decimal) -> tuple[tuple[str, str, str], Decimal]:
-    """用独立排列枚举计算 EXPECTED_POINTS 的最优无重复领奖台。"""
-    by_key = {item.option_key: item for item in result.marginals}
-    if set(points) != set(by_key) or exact_multiplier < 0:
-        raise RuntimeFault('PODIUM_SCORE_INPUT')
-    best: tuple[str, str, str] | None = None
-    best_score: Decimal | None = None
-    for picks in itertools.permutations(sorted(by_key), 3):
-        score = Decimal(0)
-        for rank, option_key in enumerate(picks):
-            marginal = Decimal(by_key[option_key].counts[rank]) / Decimal(result.samples)
-            podium = Decimal(sum(by_key[option_key].counts)) / Decimal(result.samples)
-            score += points[option_key] * (podium + (exact_multiplier - 1) * marginal)
-        if best_score is None or score > best_score or (
-            score == best_score and best is not None and picks < best
-        ):
-            best, best_score = picks, score
-    if best is None or best_score is None:
-        raise RuntimeFault('PODIUM_SCORE_INPUT')
-    return best, best_score

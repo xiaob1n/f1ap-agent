@@ -3,7 +3,8 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
-from f1ap_agent.contracts.verifier import canonical, digest, evaluate, parse
+from f1ap_agent.contracts.verifier import digest, parse
+from f1ap_agent.contracts.answers import VERSION, definition as answer_definition
 from f1ap_agent.runtime import (
     Json,
     RuntimeFault,
@@ -14,16 +15,11 @@ from f1ap_agent.runtime import (
     json_object,
     json_string,
 )
-from f1ap_agent.worker.models import load_contract
 
 
 def load_definition(path: Path) -> dict[str, Json]:
     document = json_object(parse(path.read_bytes()))
-    definition = json_object(document.get('definition', document))
-    verdict = evaluate(canonical({'definition': definition}), kind='definition_projection', contract=load_contract())
-    if not verdict['accepted']:
-        raise RuntimeFault('RESEARCH_DEFINITION_INVALID')
-    return definition
+    return answer_definition(document.get('definition', document))
 
 
 def save_predictions(definition: dict[str, Json], answer: dict[str, Json], output: Path,
@@ -61,7 +57,7 @@ def save_predictions(definition: dict[str, Json], answer: dict[str, Json], outpu
             raise RuntimeFault('PREDICTION_STATUS')
         results.append({**item, 'picks': picks})
     atomic_json(output / 'predictions.json', {
-        'schema_version': 'UNSCORED_RESEARCH_V1', 'request_id': str(uuid.uuid4()),
+        'schema_version': VERSION, 'request_id': str(uuid.uuid4()),
         'definition_sha256': digest(definition), 'reference_session_key': session_key,
         'data_cutoff_at': datetime.fromisoformat(cutoff).isoformat(timespec='milliseconds').replace('+00:00', 'Z'),
         'generated_at': datetime.now(UTC).isoformat(timespec='milliseconds').replace('+00:00', 'Z'),
