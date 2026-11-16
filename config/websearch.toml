@@ -1,0 +1,2 @@
+endpoint = "https://mcp.exa.ai/mcp"
+timeout_seconds = 45
