@@ -23,6 +23,7 @@ from f1ap_agent.models.calls import Calls
 from f1ap_agent.models.mock import MockPlan, MockProvider, Provider
 from f1ap_agent.models.deepseek import DeepSeek
 from f1ap_agent.worker import llm
+from f1ap_agent.mongo_research.config import Config as ResearchConfig
 
 
 class LlmState(TypedDict):
@@ -197,6 +198,7 @@ class Worker:
     mock_plan_path: Path | None = None
     news_catalog_path: Path | None = None
     llm_provider: DeepSeek | None = None
+    research_config: ResearchConfig | None = None
 
     def calls(self) -> Calls:
         if self.mock_plan is None or self.provider is None:

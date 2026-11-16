@@ -1,8 +1,8 @@
 # MongoDB 当前数据研究
 
-此入口独立于 API、MQ 与现有 Worker。图为 prepare → model → query → model → validate；模型自主选择允许的集合、车手和圈号。默认输出研究建议；可通过 `--definition ../docs/round21-import/round-import.json` 加载现有十题。结构化模式生成 `predictions.json`，逐题复用冻结结果 Schema 与语义校验，但不调度或回发 wire 事件。所选会话仅作明确的历史参考；当前 Las Vegas 十题均为 BLOCKED，因此结果保留 RULE_BLOCKED，不产生伪 VALID。
+图为 prepare → model → query → model → validate；模型自主选择允许的集合、车手和圈号。CLI 可独立运行，也可由正式 MQ Worker 执行，见 `unscored-mq.md`。通过 `--definition` 加载十题后，输出 `UNSCORED_RESEARCH_V1` 无积分研究结果：只考虑最可能选项或有序组合，不计算预期积分，不受计分规则 BLOCKED 阻塞；仍检查候选合法性、选择数量、顺序和证据。依据不足时输出 DATA_INSUFFICIENT，不编造选项。
 
-`predictions.json` 中的 run_id=1 仅在独立输出目录内有效，不是业务库 run ID。Mongo 查询证据单独保存在 query 文件中，不把当前观察时间伪造成截止前冻结证据。结果格式校验通过不代表预测有效、准确率提升或历史回测无泄漏。
+`predictions.json` 使用 request_id；MQ 路径替换为可信任务身份，通过独立完成消息回传 API 入库。旧冻结1.0.2协议不变，不将无积分结果标成其 VALID 或送入结算。Mongo 查询证据单独保存，不伪造截止前冻结证据。最终响应接受纯 JSON 或单个完整 json 代码围栏，拒绝额外正文、重复键和非法数值。结果校验通过不代表准确率提升或历史回测无泄漏。
 
 Python 3.12，`uv sync --frozen`；主机需要 Node/npm。先运行 `npm install --prefix .local/mongodb-mcp --no-audit --no-fund mongodb-mcp-server@3.3.0`，成功后执行 `export PATH="$PWD/.local/mongodb-mcp/node_modules/.bin:$PATH"`。CLI 直接启动已安装的 `mongodb-mcp-server`，不在初始化期间下载。2026-11-15 已核实官方 3.3.0 并实际完成 stdio 初始化和真实 MongoDB 查询；filter 使用 EJSON 日期对象，结果读取 structuredContent.documents。
 

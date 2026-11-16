@@ -206,7 +206,8 @@ def main() -> int:
         worker = Worker(store, contract, FakeExecutor(runtime / 'fake-executor.json'), LocalSender(runtime), args.mapping,
                         mock_plan=plan, provider=MockProvider(plan, runtime / 'mock-effects.json') if plan else None,
                         mock_plan_path=args.mock_plan, news_catalog_path=args.news_catalog,
-                        llm_provider=llm_provider)
+                        llm_provider=llm_provider,
+                        research_config=startup.research if startup is not None else None)
         # 排空超时不能使用 asyncio.run 的无限 executor join；由进程入口强制退出。
         loop = asyncio.new_event_loop()
         try:

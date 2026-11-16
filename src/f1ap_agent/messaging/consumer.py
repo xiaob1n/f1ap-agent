@@ -9,7 +9,9 @@ from typing import Callable, Protocol, TypedDict
 
 import aio_pika
 
-from f1ap_agent.contracts.verifier import Rejection
+from f1ap_agent.contracts.verifier import Rejection, parse
+from f1ap_agent.mongo_research.mq_contract import ResearchTask, VERSION, REQUESTED
+from f1ap_agent.mongo_research.mq import process as process_research
 from f1ap_agent.messaging import Exchange, RabbitPublisher, source_identity
 from f1ap_agent.runtime import Json, RuntimeFault, atomic_json, json_object, read_json
 from f1ap_agent.worker.engine import Worker
@@ -61,10 +63,14 @@ class RabbitConsumer:
     worker: Worker
     clock: Callable[[], str] = utc_now
 
-    def process(self, body: bytes) -> tuple[Task | NewsTask, bool]:
+    def process(self, body: bytes) -> tuple[Task | NewsTask | ResearchTask, bool]:
         """验证和源身份落盘与 Worker 状态共用同一个写锁。"""
         with self.worker.store.exclusive():
             now = self.clock()
+            event = json_object(parse(body))
+            if event.get('schema_version') == VERSION or event.get('event_type') == REQUESTED:
+                research = ResearchTask.parse(body, self.worker.contract)
+                return research, process_research(self.worker, research, self.clock)
             task = Task.parse(body, self.worker.contract, now)
             event_id, payload_sha256, run_id = source_identity(task.request)
             path = self.worker.store.root / 'sources.json'
@@ -87,7 +93,12 @@ class RabbitConsumer:
             return False
         if not accepted:
             raise RetryableDelivery('PUBLISH_NOT_CONFIRMED')
-        if output is not None:
+        if output is not None and isinstance(task, ResearchTask):
+            atomic_json(output / 'request.json', task.request)
+            document = json_object(read_json(self.worker.store.root / 'unscored' / 'records.json'))
+            record = json_object(json_object(document['records'])[task.run_id])
+            atomic_json(output / 'events.json', [record['event']])
+        elif output is not None:
             log = self.worker.store.registry_log(str(task.run_id))
             atomic_json(output / 'request.json', log['request'])
             atomic_json(output / 'events.json', log['events'])

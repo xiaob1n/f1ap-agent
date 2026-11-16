@@ -1,13 +1,16 @@
-"""独立十题研究输出，复用冻结结果 Schema 与语义校验。"""
+"""无积分研究预测：只校验题目身份、合法选项与作答数量顺序。"""
+import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
-from f1ap_agent.contracts.semantics import validate_result
-from f1ap_agent.contracts.verifier import Rejection, canonical, digest, evaluate, parse
+from f1ap_agent.contracts.verifier import canonical, digest, evaluate, parse
 from f1ap_agent.runtime import (
     Json,
     RuntimeFault,
     atomic_json,
+    json_array,
     json_events,
+    json_integer,
     json_object,
     json_string,
 )
@@ -25,47 +28,41 @@ def load_definition(path: Path) -> dict[str, Json]:
 
 def save_predictions(definition: dict[str, Json], answer: dict[str, Json], output: Path,
                      session_key: int, cutoff: str) -> None:
-    contract = load_contract()
     supplied = json_events(answer['predictions'])
     questions = json_events(definition['questions'])
-    expected = {json_string(q['question_id']) for q in questions}
-    by_id = {json_string(item['question_id']): item for item in supplied}
-    if len(by_id) != len(supplied) or set(by_id) - expected:
+    expected = {json_string(q['source_question_id']) for q in questions}
+    by_id = {json_string(item['source_question_id']): item for item in supplied}
+    if len(by_id) != len(supplied) or set(by_id) != expected:
         raise RuntimeFault('PREDICTION_QUESTION_IDS')
-    context: dict[str, Json] = {'definition': definition, 'definition_sha256': digest(definition),
-        'input_sha256': digest({'definition': definition, 'reference_session_key': session_key, 'cutoff': cutoff}),
-        'data_cutoff_at': cutoff,
-        'profile': {'strategies': [{'strategy': 'EXPECTED_POINTS', 'version': 'EXPECTED_POINTS_V1'}]}}
+    limitations = [json_string(value) for value in json_array(answer['limitations'])]
+    if not 1 <= len(limitations) <= 20 or any(not value.strip() or len(value) > 500 for value in limitations):
+        raise RuntimeFault('PREDICTION_LIMITATIONS')
     results: list[Json] = []
     for question in questions:
-        qid = json_string(question['question_id'])
-        blocked = json_object(question['rule'])['verification'] != 'VERIFIED'
-        result: dict[str, Json] = {'run_id': '1', 'question_id': qid,
-            'definition_sha256': context['definition_sha256'], 'input_sha256': context['input_sha256'],
-            'status': 'FAILED', 'data_status': 'INSUFFICIENT',
-            'reason': 'RULE_BLOCKED' if blocked else 'LLM_OUTPUT_INVALID',
-            'probabilities': [], 'recommendations': [], 'evidence': [], 'fixture_class': 'CONTROLLED_INPUT'}
-        if not blocked and qid in by_id:
-            item = by_id[qid]
-            if set(item) == {'question_id', 'insufficient'} and item['insufficient'] is True:
-                result.update(status='DATA_INSUFFICIENT', reason='LLM_DATA_INSUFFICIENT')
-            elif set(item) == {'question_id', 'probabilities', 'recommendations'}:
-                result.update(status='VALID', data_status='SUFFICIENT', reason='',
-                              probabilities=item['probabilities'], recommendations=item['recommendations'])
-        result['result_sha256'] = digest(result)
-        try:
-            contract.validate(result, 'prediction-question-completed.schema.json')
-            validate_result(result, context)
-        except Rejection:
-            result.update(status='FAILED', data_status='INSUFFICIENT', reason='LLM_OUTPUT_INVALID',
-                          probabilities=[], recommendations=[])
-            _ = result.pop('result_sha256')
-            result['result_sha256'] = digest(result)
-            contract.validate(result, 'prediction-question-completed.schema.json')
-            validate_result(result, context)
-        results.append(result)
-    atomic_json(output / 'predictions.json', {'kind': 'CURRENT_RESEARCH',
-        'wire_dispatched': False, 'result_schema_validated': True, 'run_id_scope': 'LOCAL_OUTPUT_DIRECTORY',
-        'reference_session_key': session_key, 'reference_role': 'HISTORICAL_REFERENCE',
-        'historical_availability_guaranteed': False, 'query_evidence_location': 'query-*.json',
-        'definition': definition, 'results': results})
+        item = by_id[json_string(question['source_question_id'])]
+        if set(item) != {'source_question_id', 'status', 'picks', 'explanation', 'evidence_ids'}:
+            raise RuntimeFault('PREDICTION_FIELDS')
+        picks = [json_string(pick) for pick in json_array(item['picks'])]
+        explanation = json_string(item['explanation'])
+        ids = [json_integer(value) for value in json_array(item['evidence_ids'])]
+        if (not explanation.strip() or len(explanation) > 2000 or not ids or len(ids) > 32
+                or any(value <= 0 for value in ids) or len(set(ids)) != len(ids)
+                or not set(ids) <= set(json_array(answer['evidence_ids']))):
+            raise RuntimeFault('PREDICTION_EVIDENCE')
+        if question['value_kind'] != 'OPTION':
+            raise RuntimeFault('PREDICTION_KIND_UNSUPPORTED')
+        if item['status'] == 'PREDICTED':
+            rule = json_object(question['rule'])
+            allowed = {json_string(option['option_key']) for option in json_events(question['options'])}
+            if (not json_integer(rule['min_picks']) <= len(picks) <= json_integer(rule['max_picks'])
+                    or len(set(picks)) != len(picks) or not set(picks) <= allowed):
+                raise RuntimeFault('PREDICTION_PICKS')
+        elif item['status'] != 'DATA_INSUFFICIENT' or picks:
+            raise RuntimeFault('PREDICTION_STATUS')
+        results.append({**item, 'picks': picks})
+    atomic_json(output / 'predictions.json', {
+        'schema_version': 'UNSCORED_RESEARCH_V1', 'request_id': str(uuid.uuid4()),
+        'definition_sha256': digest(definition), 'reference_session_key': session_key,
+        'data_cutoff_at': datetime.fromisoformat(cutoff).isoformat(timespec='milliseconds').replace('+00:00', 'Z'),
+        'generated_at': datetime.now(UTC).isoformat(timespec='milliseconds').replace('+00:00', 'Z'),
+        'model': 'deepseek-flash', 'results': results, 'limitations': limitations})
