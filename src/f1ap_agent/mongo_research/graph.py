@@ -68,12 +68,19 @@ async def research(request: Request, config: Config, session: ClientSession,
     async def invoke(state: State) -> State:
         if state['rounds'] >= config.max_model_rounds:
             raise RuntimeFault('MODEL_ROUND_LIMIT')
-        message = await model.call(client, state['messages'], state['rounds'] + 1)
+        messages: list[dict[str, Json]] = state['messages']
+        if state['rounds'] + 1 == config.max_model_rounds:
+            # 总调用上限包含最终输出，最后一轮只整理已有证据，不再查询。
+            messages = [*messages, {'role': 'user', 'content':
+                '现在进入最后一轮，请依据已有查询证据直接输出规定的最终 JSON，不再调用工具。'
+                '有十题定义时必须覆盖全部十题；依据不足的题标为 DATA_INSUFFICIENT，'
+                'picks 留空并说明缺失数据，不编造答案或引用。'}]
+        message = await model.call(client, messages, state['rounds'] + 1)
         pending = json_array(message.get('tool_calls', []))
         if len(pending) > 10:
             raise RuntimeFault('TOOL_BATCH_LIMIT')
         return {**state, 'rounds': state['rounds'] + 1,
-            'messages': [*state['messages'], message], 'pending': pending,
+            'messages': [*messages, message], 'pending': pending,
             'answer': '' if pending else json_string(message['content'])}
 
     async def execute(state: State) -> State:

@@ -38,6 +38,8 @@ class Config:
         integers = {key: json_integer(value) for key, value in values.items()}
         if any(not 1 <= value <= bounds[key] for key, value in integers.items()):
             raise RuntimeFault('CONFIG_LIMITS')
+        if integers['max_model_rounds'] < 2:
+            raise RuntimeFault('CONFIG_LIMITS')
         return cls(**integers)
 
 

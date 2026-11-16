@@ -31,7 +31,8 @@ class Model:
             'input_tokens': None, 'output_tokens': None, 'cost': None, 'cost_status': 'UNKNOWN'}
         body = {'model': 'deepseek-flash', 'stream': False,
                 'thinking': {'type': 'disabled'}, 'max_tokens': self.config.max_tokens,
-                'messages': messages, 'tools': [TOOL], 'tool_choice': 'auto',
+                'messages': messages, 'tools': [TOOL],
+                'tool_choice': 'none' if round_no == self.config.max_model_rounds else 'auto',
                 'parallel_tool_calls': False}
         receipt['request'] = body
         atomic_json(path, receipt)
@@ -58,6 +59,9 @@ class Model:
             message = json_object(choice['message'])
             if message.get('role') != 'assistant':
                 raise RuntimeFault('LLM_ROLE_INVALID')
+            if round_no == self.config.max_model_rounds and (
+                    choice['finish_reason'] == 'tool_calls' or message.get('tool_calls')):
+                raise RuntimeFault('LLM_FINAL_TOOL_CALL')
             receipt['outcome'] = 'SUCCEEDED'
             receipt['response'] = message
             return message
