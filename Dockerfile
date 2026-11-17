@@ -15,6 +15,7 @@ ENV TZ=UTC \
     F1AP_CONTRACTS_DIR=/app/contracts/v1 \
     F1AP_CONTRACTS_LOCK=/app/contracts.lock.json \
     UV_PYTHON_DOWNLOADS=never \
+    UV_PYTHON=/usr/local/bin/python3 \
     PATH=/opt/mongodb-mcp/node_modules/.bin:$PATH
 
 WORKDIR /app

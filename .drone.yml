@@ -13,6 +13,9 @@ steps:
   - name: verify-contract
     image: ghcr.io/astral-sh/uv:0.9.5-python3.12-bookworm-slim@sha256:f4a1d5fb780441a485a8e3f88b30344ab858ed8acde3cc35f1ef59516b253ec8
     environment:
+      # 使用已锁定镜像中的Python3.12，不读取开发机补丁版本固定文件。
+      UV_PYTHON: /usr/local/bin/python3
+      UV_PYTHON_DOWNLOADS: never
       CONTRACT_SOURCE_TOKEN:
         from_secret: contract_source_token
     commands:
