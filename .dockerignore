@@ -9,3 +9,9 @@ docs
 __pycache__/
 *.pyc
 .uv_cache
+.env*
+**/.env*
+.local
+runtime
+output
+*.log

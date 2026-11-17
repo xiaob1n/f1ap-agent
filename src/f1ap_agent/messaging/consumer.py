@@ -203,9 +203,16 @@ async def connect_and_consume(worker: Worker, connection_args: ConnectionConfig,
     try:
         while not stop.is_set():
             try:
-                return await _session(worker, connection_args, queue_name, output_dir, max_messages,
-                    delivery_timeout, confirm_timeout, existing_topology, reconciliation,
-                    daemon, health, stop, wait_topology_seconds, shutdown_timeout)
+                try:
+                    return await _session(worker, connection_args, queue_name, output_dir, max_messages,
+                        delivery_timeout, confirm_timeout, existing_topology, reconciliation,
+                        daemon, health, stop, wait_topology_seconds, shutdown_timeout)
+                except asyncio.CancelledError as error:
+                    # aiormq 心跳关闭会传播内部取消；调用方取消仍必须原样退出。
+                    task = asyncio.current_task()
+                    if task is None or task.cancelling():
+                        raise
+                    raise ConnectionError('BROKER_SESSION_CANCELLED') from error
             except (aio_pika.exceptions.AMQPException, aio_pika.exceptions.ChannelInvalidStateError,
                     ConnectionError, TimeoutError):
                 if health is not None and not stop.is_set():

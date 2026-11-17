@@ -1,0 +1,4 @@
+api_base_url = "http://127.0.0.1:8080"
+timeout_seconds = 20
+# 已核验的 Interlagos 历史正赛会话，不作为目标分站事实。
+reference_session_key = 11412

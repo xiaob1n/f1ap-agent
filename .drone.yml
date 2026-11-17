@@ -1,0 +1,51 @@
+kind: pipeline
+type: docker
+name: release-arm64
+platform:
+  os: linux
+  arch: arm64
+concurrency:
+  limit: 1
+trigger:
+  event: [tag]
+  ref: [refs/tags/v*]
+steps:
+  - name: verify-contract
+    image: ghcr.io/astral-sh/uv:0.12.10-python3.12-bookworm-slim
+    environment:
+      CONTRACT_SOURCE_TOKEN:
+        from_secret: contract_source_token
+    commands:
+      - 'case "$${DRONE_TAG}" in v*) ;; *) exit 2 ;; esac; case "$${DRONE_TAG}" in *[!a-zA-Z0-9_.-]*) exit 2 ;; esac; test "$${#DRONE_TAG}" -le 128'
+      - uv sync --frozen
+      # API冻结契约由固定提交导出，不用分支最新版本。
+      - uv run --frozen python -c "import os,urllib.request; r=urllib.request.Request('https://api.github.com/repos/xiaob1n/f1ap-api/tarball/d5e3160e1267169007b390b793d5a510507ae944',headers={'Authorization':'Bearer '+os.environ['CONTRACT_SOURCE_TOKEN']}); open('/tmp/api-contract.tar.gz','wb').write(urllib.request.urlopen(r,timeout=30).read())"
+      - mkdir -p contracts
+      - tar -xzf /tmp/api-contract.tar.gz --strip-components=2 -C contracts --wildcards '*/contracts/v1'
+      - uv run --frozen f1ap-contract-verify --contracts contracts/v1 --lock contracts.lock.json --report /tmp/contract-report.json --roundtrip-out /tmp/contract-roundtrip
+  - name: publish-agent
+    image: plugins/docker
+    settings:
+      registry: ghcr.io
+      repo: ghcr.io/xiaob1n/f1ap-agent
+      tags: ["${DRONE_TAG}"]
+      username:
+        from_secret: ghcr_username
+      password:
+        from_secret: ghcr_token
+  - name: deploy-agent-and-scheduler
+    image: appleboy/drone-ssh
+    settings:
+      host:
+        from_secret: deploy_host
+      port:
+        from_secret: deploy_port
+      username:
+        from_secret: deploy_user
+      key:
+        from_secret: deploy_key
+      fingerprint:
+        from_secret: deploy_fingerprint
+      script_stop: true
+      script:
+        - /opt/f1ap/release.sh agent "${DRONE_TAG}"
