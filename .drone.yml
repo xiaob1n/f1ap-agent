@@ -11,7 +11,7 @@ trigger:
   ref: [refs/tags/v*]
 steps:
   - name: verify-contract
-    image: ghcr.io/astral-sh/uv:0.12.10-python3.12-bookworm-slim
+    image: ghcr.io/astral-sh/uv:0.9.5-python3.12-bookworm-slim@sha256:f4a1d5fb780441a485a8e3f88b30344ab858ed8acde3cc35f1ef59516b253ec8
     environment:
       CONTRACT_SOURCE_TOKEN:
         from_secret: contract_source_token
