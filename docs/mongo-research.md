@@ -35,6 +35,16 @@ uv run --frozen f1ap-mongo-research \
 
 本地测试：`TMPDIR=/private/tmp .venv/bin/python -m unittest discover -s tests -p test_mongo_research.py -v`。真实数据库、真实付费模型和完整预测效果另需当次授权；本地 wire fake 测试不能替代。
 
+## 模型按需加载研究 skill
+
+系统提示只列出可用 skill 的名称和简介，由模型自主调用 `load_skill({"name":"lap-analysis"})` 读取正文。圈速要求位于 `src/f1ap_agent/mongo_research/skills/lap-analysis/SKILL.md`，随 Python 包发布，Docker 通过现有 `COPY src/ src/` 一并携带。正文不是默认注入，也不扫描本机其他 skill 目录；新增发布 skill 时在 `skills/__init__.py` 的 CATALOG 登记名称和简介。
+
+`lap-analysis` 要求核对车手覆盖、有效独立圈、重复记录、胎种和赛段可比性，规划剩余查询轮次，并在数据不足时逐题说明。它不扩大现有 find 的会话、字段或行数权限，也不能取得当前工具不支持的数据。总模型轮数保持原配置；选择 skill 可能使用一轮，最后一轮仍只作答。
+
+每次加载写入独立的 `skill-NNN.json`，包含时间、名称、结果和实际读取的正文。文件缺失、不可读或编码错误记为 `SKILL_UNAVAILABLE`，空文件记为 `SKILL_EMPTY`，未登记名称记为 `SKILL_NOT_FOUND`；模型收到原因后沿用基础提示继续。额外路径参数被拒绝。加载次数不计入 MongoDB 查询数，不提供 query_id，不能用作比赛 evidence_ids。模型也可以不选 skill，原有预测流程保持可用。
+
+离线验证只能证明目录、加载、降级、证据隔离和输出接线；模型是否会主动选择、遵循要求，以及真实命中率是否提高，需要另外授权的真实模型与比赛答案对照验证。
+
 ## 本次本地核验记录（2026-11-15）
 
 - `uv lock && uv sync --frozen`：成功解析 65 个包；`uv lock --check` 成功。新增依赖仅 MCP SDK 与 anyio 及其必要传递依赖。
