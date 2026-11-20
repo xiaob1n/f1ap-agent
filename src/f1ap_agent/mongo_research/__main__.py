@@ -14,6 +14,7 @@ from mcp.client.stdio import stdio_client
 from f1ap_agent.runtime import Json, RuntimeFault, atomic_json, json_object
 
 from .config import Config, Request
+from .output import failure_code
 
 
 async def run(request: Request, config: Config, errors: TextIO) -> None:
@@ -110,7 +111,7 @@ def main() -> int:
         return 0
     except (RuntimeFault, OSError, ValueError, KeyError, TypeError, ExceptionGroup) as error:
         # CLI 边界只保存错误类别，不输出第三方异常正文中的凭据。
-        code = error.code if isinstance(error, RuntimeFault) else type(error).__name__
+        code = failure_code(error)
         if created and args.output is not None:
             atomic_json(args.output / 'status.json', {'outcome': 'FAILED', 'reason': code})
         print(code, file=sys.stderr)

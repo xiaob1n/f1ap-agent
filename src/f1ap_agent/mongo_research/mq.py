@@ -11,6 +11,7 @@ from f1ap_agent.contracts.verifier import canonical, digest, parse
 from f1ap_agent.runtime import Json, RuntimeFault, atomic_json, json_integer, json_object, json_string, read_json
 from .config import Config, Request
 from .mq_contract import ResearchTask, stamp
+from .output import failure_code
 
 if TYPE_CHECKING:
     from f1ap_agent.worker.engine import Worker
@@ -94,7 +95,7 @@ def process(worker: 'Worker', task: ResearchTask, clock: Callable[[], str]) -> b
                     atomic_json(directory / 'predictions.json', prediction)
                 except (RuntimeFault, OSError, ValueError, TypeError, KeyError, ExceptionGroup) as error:
                     # 只保存稳定类别，第三方错误正文可能含连接凭据。
-                    reason = 'RESEARCH_FAILED_' + type(error).__name__
+                    reason = 'RESEARCH_FAILED_' + failure_code(error)
         if prediction is None:
             prediction = task.failure(reason, clock())
         record.update(phase='COMPLETED', event=task.completed(prediction))

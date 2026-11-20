@@ -45,11 +45,12 @@ async def research(request: Request, config: Config, session: ClientSession,
                   '必须至少查询一次；可以自主选择集合、车手和圈号。'
                   '数据是当前观察的可变数据，cutoff 只是事件时间过滤，不保证历史可用性。'
                   '返回有界样本，不能当作完整比赛。drivers 无事件时间；stints 不含 lap_end。'
-                  '最终只输出 JSON：answer（非空研究建议字符串）、evidence_ids（引用查询编号数组）、'
+                  '最终只输出 JSON 对象，基本字段为 answer（非空研究建议字符串）、evidence_ids（引用查询编号数组）、'
                   'limitations（非空字符串数组，说明缺失数据、截断与不确定性）。'
                   '这不是冻结十题 wire 预测，不得声称已通过其契约验证。')
         if definition is not None:
-            prompt += ('本次另输出 predictions 数组，恰好覆盖全部十题。目标是不考虑积分，直接预测最可能的选项或有序组合。'
+            prompt += ('本次最终 JSON 必须恰好包含 answer、evidence_ids、limitations、predictions 四个顶层字段，'
+                       'predictions 数组恰好覆盖全部十题，不能只在 answer 文字中描述预测。目标是不考虑积分，直接预测最可能的选项或有序组合。'
                        '每项必须含 source_question_id、status、picks、explanation、evidence_ids。'
                        'status 为 PREDICTED 或 DATA_INSUFFICIENT；picks 是原始 option_key 字符串数组，'
                        'option_key 是不透明的官方选项标识，只能从当前题目的 options 原样复制，不能拼接或借用其他题目的键。'
@@ -117,6 +118,12 @@ async def research(request: Request, config: Config, session: ClientSession,
         expected_fields = {'answer', 'evidence_ids', 'limitations'}
         if definition is not None:
             expected_fields.add('predictions')
+        if definition is not None and set(answer) == expected_fields - {'predictions'} and state['rounds'] < config.max_model_rounds:
+            # 模型漏掉十题时仅使用剩余轮次补全，不追加调用额度或代填答案。
+            return {**state, 'messages': [*state['messages'], {'role': 'user', 'content':
+                '上次 JSON 缺少 predictions 数组，尚未完成任务。请输出含 answer、evidence_ids、limitations、'
+                'predictions 四个顶层字段的完整 JSON，predictions 必须覆盖所给十题。'
+                '仅使用已有查询证据，依据不足的题填写 DATA_INSUFFICIENT、picks=[] 并解释原因。'}], 'answer': ''}
         if set(answer) != expected_fields:
             raise RuntimeFault('ANSWER_FIELDS')
         ids = json_array(answer['evidence_ids'])
@@ -145,6 +152,6 @@ async def research(request: Request, config: Config, session: ClientSession,
     _ = graph.add_edge('prepare', 'model')
     _ = graph.add_conditional_edges('model', route)
     _ = graph.add_conditional_edges('query', lambda state: 'query' if state['pending'] else 'model')
-    _ = graph.add_edge('validate', END)
+    _ = graph.add_conditional_edges('validate', lambda state: END if state['answer'] else 'model')
     _ = await graph.compile().ainvoke({'messages': [], 'rounds': 0, 'queries': 0,
         'pending': [], 'answer': ''}, {'recursion_limit': config.max_model_rounds * 11 + 3})
