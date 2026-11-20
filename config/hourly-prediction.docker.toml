@@ -1,4 +1,4 @@
 api_base_url = "http://api:8080"
 timeout_seconds = 20
-# 显式历史参考，目标分站仍由官网当前赛程决定。
+# FP1前的显式历史参考；开始后自动选择官网身份对应的本站练习会话。
 reference_session_key = 11412

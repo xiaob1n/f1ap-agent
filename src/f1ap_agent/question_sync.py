@@ -33,6 +33,24 @@ def current_fixture(raw: bytes) -> dict[str, Json]:
     raise RuntimeFault('CURRENT_ROUND_UNAVAILABLE')
 
 
+def lock_fixture(raw: bytes, current: dict[str, Json]) -> dict[str, Json]:
+    """同一分站的首个计时场次；不会在排位开始后顺延到正赛。"""
+    root = json_object(decode(raw))
+    rows = [json_object(value) for value in json_array(json_object(root['Data'])['Value'])]
+    rows = [value for value in rows if value.get('IsBonusRound', 0) == 0
+            and value['GamedayId'] == current['GamedayId'] and value['TourId'] == current['TourId']
+            and value['Season'] == current['Season']]
+    def start(value: dict[str, Json]) -> datetime:
+        stamp = datetime.fromisoformat(json_string(value['SessionStartDateISO8601']))
+        if stamp.tzinfo is None:
+            raise RuntimeFault('DEADLINE_TIMEZONE_REQUIRED')
+        return stamp
+    selected = min(rows, key=start)
+    if selected['SessionType'] not in ('Qualifying', 'Sprint Qualifying', 'Sprint'):
+        raise RuntimeFault('LOCK_SESSION_UNSUPPORTED')
+    return selected
+
+
 def project(fixture: dict[str, Json], raw: bytes, now: datetime) -> dict[str, Json]:
     """只投影题目、候选及可见选择形状，答案和Chance不进入导入请求。"""
     gameday = json_integer(fixture['GamedayId'])
@@ -72,12 +90,18 @@ def project(fixture: dict[str, Json], raw: bytes, now: datetime) -> dict[str, Js
             'value_kind': 'OPTION', 'options': options,
             'rule': {'min_picks': picks, 'max_picks': picks, 'ordered': template == 1}})
     questions.sort(key=lambda value: json_integer(json_object(value)['no']))
+    deadline = datetime.fromisoformat(json_string(fixture['SessionStartDateISO8601']))
+    if deadline.tzinfo is None:
+        raise RuntimeFault('DEADLINE_TIMEZONE_REQUIRED')
     definition: dict[str, Json] = {'schema_version': VERSION, 'round_id': str(gameday), 'definition_version': 1,
-        'name': f"{season} {json_string(fixture['MeetingName'])}", 'deadline_at': None,
-        'deadline_verified': False,
-        'deadline_basis': 'UNVERIFIED: page countdown is not an independently verified absolute cutoff',
+        'name': f"{season} {json_string(fixture['MeetingName'])}",
+        'deadline_at': deadline.astimezone(timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z'),
+        'deadline_verified': True,
+        'deadline_basis': ''.join((f"SYSTEM_EARLY_LOCK: {SOURCE}/feeds/schedule/raceday_en.json GamedayId={gameday}; ",
+            f"FOMMEETINGSESSIONKEY={json_string(fixture['FOMMEETINGSESSIONKEY'])}; SessionStartDateISO8601; ",
+            'lock at session start, 40s before website countdown')),
         'questions': questions}
-    answer_definition(definition)
+    _ = answer_definition(definition)
     return {'fixture_class': 'CONTROLLED_INPUT',
             'source': {'source_id': source_url, 'observed_at': now.isoformat(timespec='milliseconds').replace('+00:00', 'Z'),
                        'permission_ref': 'USER_AUTHORIZED_PERIODIC_CURRENT_ROUND'},
@@ -91,6 +115,7 @@ def sync_once(client: httpx.Client, api_url: str, token: str, now: datetime) -> 
     schedule = client.get(f'{SOURCE}/feeds/schedule/raceday_en.json')
     _ = schedule.raise_for_status()
     fixture = current_fixture(schedule.content)
+    fixture = lock_fixture(schedule.content, fixture)
     gameday = json_integer(fixture['GamedayId'])
     feed = client.get(f'{SOURCE}/feeds/questions/questions_{gameday}_en.json')
     _ = feed.raise_for_status()
@@ -103,6 +128,7 @@ def sync_once(client: httpx.Client, api_url: str, token: str, now: datetime) -> 
     saved = json_object(decode(result.content))
     return {'status': 'UNCHANGED' if saved['idempotent'] is True else 'IMPORTED',
             'source_gameday_id': str(gameday), 'gameplay_url': f'{SOURCE}/en/gameplay/{gameday}',
+            'fixture': fixture,
             'definition_url': f"{api_url}/internal/v2/rounds/{json_string(saved['round_id'])}/predictions/definition",
             'response': saved}
 

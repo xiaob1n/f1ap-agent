@@ -62,7 +62,9 @@ async def research(request: Request, config: Config, session: ClientSession,
                        '数量遵守 min_picks/max_picks，有序题按名次排列，不能重复。'
                        '依据不足时 status=DATA_INSUFFICIENT、picks=[]，逐题解释不足。'
                        'explanation 每题最多2000字，evidence_ids 最多32个实际查询编号；'
-                       'limitations 最多20条、每条最多500字。所选会话仅作历史参考，不是目标分站。')
+                       'limitations 最多20条、每条最多500字。先查询确认所选会话与目标分站的关系，'
+                       '本站练习圈可用于赛前排位推断；不是本站的会话只作历史参考并明确标注。'
+                       '排位尚未举行不等于不能预测，不得把练习圈推断写成已发生的排位成绩。')
             model_definition = {**definition, 'questions': [{
                 'source_question_id': q['source_question_id'], 'text': q['text'], 'value_kind': q['value_kind'],
                 'options': q['options'],

@@ -2,50 +2,26 @@
 import argparse
 import os
 import sys
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TextIO
 
 import anyio
 import httpx
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
 
-from f1ap_agent.runtime import Json, RuntimeFault, atomic_json, json_object
+from f1ap_agent.runtime import RuntimeFault, atomic_json
 
 from .config import Config, Request
 from .output import failure_code
+from .mcp_session import connect
 
 
 async def run(request: Request, config: Config, errors: TextIO) -> None:
     from .graph import research
-    uri = os.environ.get('MDB_MCP_CONNECTION_STRING', '')
     key = os.environ.get('DEEPSEEK_API_KEY', '')
-    if not uri or not key:
+    if not key:
         raise RuntimeFault('CREDENTIAL_ENV_MISSING')
-    # 不继承其他 MDB 配置，避免主机设置覆盖只读模式或开启磁盘日志。
-    env = {name: os.environ[name] for name in
-           ('PATH', 'HOME', 'TMPDIR', 'NODE_COMPILE_CACHE', 'BUN_RUNTIME_TRANSPILER_CACHE_PATH')
-           if name in os.environ}
-    env['MDB_MCP_CONNECTION_STRING'] = uri
-    # 提前安装固定版本，避免将包下载计入协议初始化超时。
-    server = StdioServerParameters(command='mongodb-mcp-server', args=[
-        '--readOnly', '--transport', 'stdio',
-        '--telemetry', 'disabled', '--loggers', '',
-        '--maxDocumentsPerQuery', str(config.row_limit),
-        '--maxBytesPerQuery', str(config.byte_limit), '--timeoutMs', str(config.timeout_seconds * 1000)], env=env)
-    async with (stdio_client(server, errlog=errors) as (reader, writer),
-                ClientSession(reader, writer,
-                    read_timeout_seconds=timedelta(seconds=config.timeout_seconds)) as session):
-        with anyio.fail_after(config.timeout_seconds):
-            _ = await session.initialize()
-            tools = await session.list_tools()
-        find = next((tool for tool in tools.tools if tool.name == 'find'), None)
-        schema: Json = find.inputSchema if find is not None else {}
-        properties = json_object(json_object(schema).get('properties', {}))
-        if not {'database', 'collection', 'filter', 'projection', 'limit',
-                'responseBytesLimit'} <= set(properties):
-            raise RuntimeFault('MCP_FIND_SCHEMA')
+    async with connect(config, errors) as session:
         async with httpx.AsyncClient(timeout=config.timeout_seconds,
                 follow_redirects=False, trust_env=False) as client:
             await research(request, config, session, client, key)
