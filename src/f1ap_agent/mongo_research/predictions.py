@@ -47,14 +47,13 @@ def save_predictions(definition: dict[str, Json], answer: dict[str, Json], outpu
             raise RuntimeFault('PREDICTION_EVIDENCE')
         if question['value_kind'] != 'OPTION':
             raise RuntimeFault('PREDICTION_KIND_UNSUPPORTED')
-        if item['status'] == 'PREDICTED':
-            rule = json_object(question['rule'])
-            allowed = {json_string(option['option_key']) for option in json_events(question['options'])}
-            if (not json_integer(rule['min_picks']) <= len(picks) <= json_integer(rule['max_picks'])
-                    or len(set(picks)) != len(picks) or not set(picks) <= allowed):
-                raise RuntimeFault('PREDICTION_PICKS')
-        elif item['status'] != 'DATA_INSUFFICIENT' or picks:
+        if item['status'] != 'PREDICTED':
             raise RuntimeFault('PREDICTION_STATUS')
+        rule = json_object(question['rule'])
+        allowed = {json_string(option['option_key']) for option in json_events(question['options'])}
+        if (not json_integer(rule['min_picks']) <= len(picks) <= json_integer(rule['max_picks'])
+                or len(set(picks)) != len(picks) or not set(picks) <= allowed):
+            raise RuntimeFault('PREDICTION_PICKS')
         results.append({**item, 'picks': picks})
     atomic_json(output / 'predictions.json', {
         'schema_version': VERSION, 'request_id': str(uuid.uuid4()),

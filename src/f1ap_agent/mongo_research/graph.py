@@ -54,17 +54,20 @@ async def research(request: Request, config: Config, session: ClientSession,
             prompt += ('本次最终 JSON 必须恰好包含 answer、evidence_ids、limitations、predictions 四个顶层字段，'
                        'predictions 数组恰好覆盖全部十题，不能只在 answer 文字中描述预测。目标是不考虑积分，直接预测最可能的选项或有序组合。'
                        '每项必须含 source_question_id、status、picks、explanation、evidence_ids。'
-                       'status 为 PREDICTED 或 DATA_INSUFFICIENT；picks 是原始 option_key 字符串数组，'
+                       '每题 status 必须为 PREDICTED，并给出非空 picks；picks 是原始 option_key 字符串数组，'
                        'option_key 是不透明的官方选项标识，只能从当前题目的 options 原样复制，不能拼接或借用其他题目的键。'
                        'OpenF1 driver_number 是车号，与官方 source_id、option_key 不是同一身份标识；禁止用车号替换或推算选项键。'
                        '先根据查询中的姓名与当前题目 option.label 确认同一车手或车队，再复制该选项的 option_key；'
-                       '检查 picks 对应的 label 与 explanation 所指对象一致，无法确认身份时标为 DATA_INSUFFICIENT，不能猜映射。'
+                       '检查 picks 对应的 label 与 explanation 所指对象一致；身份不清时继续核对姓名，不能猜映射。'
                        '数量遵守 min_picks/max_picks，有序题按名次排列，不能重复。'
-                       '依据不足时 status=DATA_INSUFFICIENT、picks=[]，逐题解释不足。'
+                       '十题都要选择最可能的答案，不得以样本较少、缺少正赛数据或比赛尚未发生为由弃答。'
+                       '证据较弱时仍作赛前估计，在 explanation 中区分观测事实、推测和假设，并说明不确定性；不得编造数据或引用。'
                        'explanation 每题最多2000字，evidence_ids 最多32个实际查询编号；'
                        'limitations 最多20条、每条最多500字。先查询确认所选会话与目标分站的关系，'
-                       '本站练习圈可用于赛前排位推断；不是本站的会话只作历史参考并明确标注。'
-                       '排位尚未举行不等于不能预测，不得把练习圈推断写成已发生的排位成绩。')
+                       '小游戏在排位赛前截止，所有排位和正赛问题必须用截止前练习赛数据推测，不等待排位或正赛结果。'
+                       '排位题比较有效最快圈、短程稳定性和队内差距；正赛题结合多圈节奏、轮胎、进站和赛道事件推测。'
+                       '最快圈、进站、完赛人数和完赛区间等题缺少直接证据时，基于可用练习信息给出低把握估计，逐题写明假设。'
+                       '不是本站的会话只作历史参考并明确标注；不得把赛前推测写成已发生的排位或正赛成绩。')
             model_definition = {**definition, 'questions': [{
                 'source_question_id': q['source_question_id'], 'text': q['text'], 'value_kind': q['value_kind'],
                 'options': q['options'],
@@ -88,8 +91,8 @@ async def research(request: Request, config: Config, session: ClientSession,
             # 总调用上限包含最终输出，最后一轮只整理已有证据，不再查询。
             messages = [*messages, {'role': 'user', 'content':
                 '现在进入最后一轮，请依据已有查询证据直接输出规定的最终 JSON，不再调用工具。'
-                '有十题定义时必须覆盖全部十题；依据不足的题标为 DATA_INSUFFICIENT，'
-                'picks 留空并说明缺失数据，不编造答案或引用。'}]
+                '有十题定义时必须对全部十题输出 PREDICTED 和合法非空 picks。'
+                '用已有练习赛数据推测排位和正赛，证据较弱也给出最可能选项并说明假设，不编造事实或引用。'}]
         message = await model.call(client, messages, state['rounds'] + 1)
         pending = json_array(message.get('tool_calls', []))
         if len(pending) > 10:
@@ -141,7 +144,8 @@ async def research(request: Request, config: Config, session: ClientSession,
             return {**state, 'messages': [*state['messages'], {'role': 'user', 'content':
                 '上次 JSON 缺少 predictions 数组，尚未完成任务。请输出含 answer、evidence_ids、limitations、'
                 'predictions 四个顶层字段的完整 JSON，predictions 必须覆盖所给十题。'
-                '仅使用已有查询证据，依据不足的题填写 DATA_INSUFFICIENT、picks=[] 并解释原因。'}], 'answer': ''}
+                '仅使用已有查询证据，对十题全部填写 PREDICTED 和合法非空 picks；'
+                '排位和正赛都按练习赛数据推测，证据较弱时明确说明假设和不确定性，不得弃答或编造事实。'}], 'answer': ''}
         if set(answer) != expected_fields:
             raise RuntimeFault('ANSWER_FIELDS')
         ids = json_array(answer['evidence_ids'])
