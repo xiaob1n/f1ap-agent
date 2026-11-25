@@ -1,5 +1,15 @@
 # 可选本站新闻研究
 
+## 包内搜索指导
+
+部署 Agent 的本地 skill catalog 现提供 `news-search`，模型通过 `load_skill` 按名称加载 `mongo_research/skills/news-search/SKILL.md`；选择新闻工具前应先加载。它不是宿主 OpenCode skill，不需安装第三方，也不提供证据编号。加载失败沿用基础提示，不增加模型轮次。
+
+指导要求以目标赛事、赛季、真实 cutoff/deadline 核对新近性，从十题 DRIVER/CONSTRUCTOR 选项姓名识别相关主体，再核对正文对本站的直接影响、采用或确认处罚状态。无相关或时效不明时继续原数据研究并说明缺口；不能用截止后报道补证，也不能把旧报道或转载当本站新事实。具体核对清单写入已有 explanation/evidence_ids/limitations，不增加输出字段、搜索参数或额度。
+
+这是模型行为指导，不是时效性及相关性的硬保证；真正保证需要结构化宿主校验，当前 `news.py` 没有 driver/team 硬 gate。本次不改变其时间筛选、候选读取、证据校验与历史版本不保证的边界。
+
+## 现有工具边界
+
 这是独立预测研究工具，不改变 `websearch.py` 的候选及人工确认语义，不导入题目。默认开启；现有 research 五字段配置省略 `news_enabled` 时也开启，可在同一映射显式设置 `news_enabled = false` 关闭。Nacos 仍使用原 research 映射。无需新端点配置；固定使用 `https://mcp.exa.ai/mcp` Streamable HTTP。启用且目标、verified deadline 和剩余预算有效时，在研究图前初始化一次，由研究外层同一任务持有连接直到退出；节点只调用已连接 session。关闭或前置条件不足时不连接。可选密钥仅从 `EXA_API_KEY` 环境读入 `x-api-key` header，不传给 Mongo 子进程。
 
 MQ 可选 `target_event = {season_year, event_name, round_id}`；缺失/null 兼容旧消息，不更改 definition 和其摘要。新闻还要求 definition 的 verified deadline、任务 expires_at。独立 CLI 未新增目标参数，因此当前缺目标时只报告缺口。

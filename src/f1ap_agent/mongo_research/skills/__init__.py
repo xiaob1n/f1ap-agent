@@ -7,6 +7,7 @@ from f1ap_agent.runtime import Json, RuntimeFault, json_object, json_string
 ROOT: Final = Path(__file__).parent
 CATALOG: Final = {
     'lap-analysis': '比较车手圈速或预测名次时使用：规划车手覆盖、区分有效圈与重复样本、评估可比性和证据不足。',
+    'news-search': '选择新闻工具前使用：核对目标赛事与截止时间、车手或车队相关性，区分升级采用与确认处罚并记录缺口。',
 }
 TOOL: Final = {'type': 'function', 'function': {
     'name': 'load_skill',
