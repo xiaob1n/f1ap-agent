@@ -5,3 +5,5 @@ max_model_rounds = 6
 max_tokens = 4096
 row_limit = 100
 byte_limit = 65536
+# 可选本站新闻；需 MQ 可靠目标、已核验截止时间和剩余任务预算，密钥仅 EXA_API_KEY。
+news_enabled = true

@@ -21,6 +21,7 @@ class Config:
     max_tokens: int = 4096
     row_limit: int = 100
     byte_limit: int = 65536
+    news_enabled: bool = True
 
     @classmethod
     def load(cls, path: Path) -> 'Config':
@@ -31,16 +32,19 @@ class Config:
     @classmethod
     def from_config(cls, values: dict[str, Json]) -> 'Config':
         """本地文件和启动配置共用同一校验。"""
-        if set(values) != set(cls.__dataclass_fields__):
+        if set(values) - {'news_enabled'} != set(cls.__dataclass_fields__) - {'news_enabled'}:
             raise RuntimeFault('CONFIG_FIELDS')
+        enabled = values.get('news_enabled', True)
+        if type(enabled) is not bool:
+            raise RuntimeFault('CONFIG_NEWS_ENABLED')
         bounds = {'timeout_seconds': 300, 'max_model_rounds': 30,
                   'max_tokens': 16384, 'row_limit': 1000, 'byte_limit': 1048576}
-        integers = {key: json_integer(value) for key, value in values.items()}
+        integers = {key: json_integer(value) for key, value in values.items() if key != 'news_enabled'}
         if any(not 1 <= value <= bounds[key] for key, value in integers.items()):
             raise RuntimeFault('CONFIG_LIMITS')
         if integers['max_model_rounds'] < 2:
             raise RuntimeFault('CONFIG_LIMITS')
-        return cls(**integers)
+        return cls(**integers, news_enabled=enabled)
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +54,8 @@ class Request:
     cutoff: str
     output: Path
     definition_path: Path | None = None
+    target_event: dict[str, Json] | None = None
+    expires_at: str | None = None
 
     def validate(self) -> None:
         if not self.question.strip() or len(self.question) > 10000 or self.session_key <= 0:

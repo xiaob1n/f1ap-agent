@@ -42,10 +42,18 @@ class ResearchTask:
             check_format('f1ap-uuid', json_string(event[key]), '/' + key)
         occurred = stamp(event['occurred_at'])
         payload = json_object(event['payload'])
-        if set(payload) != {'request_id', 'run_id', 'round_id', 'definition',
+        if set(payload) - {'target_event'} != {'request_id', 'run_id', 'round_id', 'definition',
                             'definition_sha256', 'reference_session_key',
                             'data_cutoff_at', 'expires_at', 'config'}:
             raise RuntimeFault('UNSCORED_PAYLOAD_FIELDS')
+        target = payload.get('target_event')
+        if target is not None:
+            target = json_object(target)
+            if (set(target) != {'season_year', 'event_name', 'round_id'}
+                    or not 1950 <= json_integer(target['season_year']) <= 2100
+                    or not json_string(target['event_name']).strip()
+                    or target['round_id'] != payload['round_id']):
+                raise RuntimeFault('UNSCORED_TARGET_EVENT')
         request_id = json_string(payload['request_id'])
         check_format('f1ap-uuid', request_id, '/request_id')
         for key in ('run_id', 'round_id'):

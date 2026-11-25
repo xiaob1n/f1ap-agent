@@ -81,7 +81,9 @@ def process(worker: 'Worker', task: ResearchTask, clock: Callable[[], str]) -> b
                 atomic_json(definition_path, task.definition)
                 request = Request('依据提供的十题定义和历史参考会话给出无积分研究预测。',
                     json_integer(task.payload['reference_session_key']), json_string(task.payload['data_cutoff_at']),
-                    directory, definition_path)
+                    directory, definition_path,
+                    json_object(task.payload['target_event']) if task.payload.get('target_event') is not None else None,
+                    json_string(task.payload['expires_at']))
                 record['phase'] = 'INTENT'
                 save(path, records)
                 worker.checkpoint('unscored_after_intent')
