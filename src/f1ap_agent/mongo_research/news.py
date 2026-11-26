@@ -53,6 +53,23 @@ def diagnostic(text: str, is_error: bool, url: str | None) -> dict:
         'opening_excerpt': text[:1200]}
 
 
+def calendar_date(value: str):
+    """只解析明确日历日期，不把无时区的时分秒当作日期降级。"""
+    if re.fullmatch(r'\d{4}-\d\d-\d\d', value):
+        try:
+            return datetime.fromisoformat(value).replace(tzinfo=UTC)
+        except ValueError:
+            raise RuntimeFault('NEWS_TIME_UNKNOWN') from None
+    match = re.fullmatch(r'(January|February|March|April|May|June|July|August|September|October|November|December) (\d{1,2}), (\d{4})', value)
+    if match:
+        try:
+            month = 'January February March April May June July August September October November December'.split().index(match[1]) + 1
+            return datetime(int(match[3]), month, int(match[2]), tzinfo=UTC)
+        except ValueError:
+            raise RuntimeFault('NEWS_TIME_UNKNOWN') from None
+    return None
+
+
 def page(text: str, url: str, target: dict, cutoff: str, deadline: str) -> dict:
     lines = text.split('\n\n', 1)
     header = lines[0]
@@ -69,7 +86,9 @@ def page(text: str, url: str, target: dict, cutoff: str, deadline: str) -> dict:
     if header_urls != [url] or not header.startswith('# '):
         raise RuntimeFault('NEWS_PAGE_FORMAT')
     times = {}
+    dates = {}
     raw = {}
+    published_source = 'BODY'
     if re.search(r'(?im)^\s*(?:last\s+updated|date\s+modified|modified)\b', body):
         raise RuntimeFault('NEWS_TIME_UNKNOWN')
     for label in ('Published', 'Updated'):
@@ -91,30 +110,57 @@ def page(text: str, url: str, target: dict, cutoff: str, deadline: str) -> dict:
                     raise RuntimeFault('NEWS_TIME_UNKNOWN') from None
             matches = [*matches, *converted]
         if label == 'Published' and not matches:
-            raise RuntimeFault('NEWS_TIME_UNKNOWN')
+            matches = [line.strip() for line in front.splitlines() if calendar_date(line.strip()) is not None]
+            if not matches:
+                matches = re.findall(r'^Published: (\d{4}-\d\d-\d\d)$', header, re.M)
+                published_source = 'FETCH_METADATA'
+            if not matches:
+                raise RuntimeFault('NEWS_TIME_UNKNOWN')
         parsed = []
+        days = []
         for value in matches:
+            day = calendar_date(value)
+            if day is not None:
+                days.append(day)
+                continue
             if not re.fullmatch(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)', value):
                 raise RuntimeFault('NEWS_TIME_UNKNOWN')
             try:
                 parsed.append(datetime.fromisoformat(value))
             except ValueError:
                 raise RuntimeFault('NEWS_TIME_UNKNOWN') from None
-        if len(set(parsed)) > 1:
+        if len(set(parsed)) > 1 or len(set(days)) > 1:
+            raise RuntimeFault('NEWS_TIME_CONFLICT')
+        if parsed and days and days[0].date() not in (parsed[0].date(), parsed[0].astimezone(UTC).date()):
             raise RuntimeFault('NEWS_TIME_CONFLICT')
         times[label] = parsed[0] if parsed else None
-        raw[label] = [*all_matches, *f1_matches] if label == 'Published' else matches
+        dates[label] = days[0] if days and not parsed else None
+        raw[label] = [*all_matches, *f1_matches] if f1_matches and label == 'Published' else matches
     published, updated = times['Published'], times['Updated']
+    publication_day = dates['Published']
     discovered = re.findall(r'^Published: (\d{4}-\d\d-\d\d)$', header, re.M)
-    if discovered and discovered[0] not in (published.date().isoformat(), published.astimezone(UTC).date().isoformat()):
+    known_dates = (published.date().isoformat(), published.astimezone(UTC).date().isoformat()) if published else (publication_day.date().isoformat(),)
+    if any(value not in known_dates for value in discovered):
         raise RuntimeFault('NEWS_TIME_CONFLICT')
     cut, end = datetime.fromisoformat(cutoff), datetime.fromisoformat(deadline)
+    # 无时区日历日期覆盖UTC+14至UTC-12；上下界不是捏造的发表时刻。
+    earliest = published if published else publication_day - timedelta(hours=14)
+    latest = published if published else publication_day + timedelta(days=1, hours=12)
+    update_earliest = updated if updated else dates['Updated'] - timedelta(hours=14) if dates['Updated'] else None
+    update_latest = updated if updated else dates['Updated'] + timedelta(days=1, hours=12) if dates['Updated'] else None
     # 以预测截止向前滚动30天；更新旧文章不能重置其发布时间窗口。
-    if published < cut - timedelta(days=30) or published > cut or published >= end or (updated and (updated < published or updated > cut or updated >= end)):
+    if earliest < cut - timedelta(days=30) or latest > cut or latest >= end or (update_latest and (update_latest < earliest or update_latest > cut or update_latest >= end)):
+        raise RuntimeFault('NEWS_TIME_EXCLUDED')
+    if published and update_earliest and update_earliest < published:
         raise RuntimeFault('NEWS_TIME_EXCLUDED')
     return {'title': header.splitlines()[0][2:][:500], 'url': url,
         'excerpt': body[:3000], 'truncated': len(body) >= 3000,
-        'published_at': published.isoformat(), 'updated_at': updated.isoformat() if updated else None,
+        'published_at': published.isoformat() if published else None,
+        'published_date': publication_day.date().isoformat() if publication_day else None,
+        'published_precision': 'INSTANT' if published else 'DAY', 'published_source': published_source,
+        'published_interval': {'earliest': earliest.isoformat(), 'latest_exclusive': latest.isoformat()} if not published else None,
+        'updated_at': updated.isoformat() if updated else None,
+        'updated_date': dates['Updated'].date().isoformat() if dates['Updated'] else None,
         'source_time_raw': raw, 'fetched_at': datetime.now(UTC).isoformat(),
         'target_event': target, 'relevance_scope': 'RECENT_30_DAYS_NOT_TARGET_EVENT_CONFIRMED',
         'historical_availability_guaranteed': False}
