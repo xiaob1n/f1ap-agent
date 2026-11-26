@@ -18,7 +18,6 @@ from f1ap_agent.runtime import (
 from .config import Config
 from .query import TOOL
 from .skills import TOOL as SKILL_TOOL
-from .news import TOOLS as NEWS_TOOLS
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,7 +33,7 @@ class Model:
         body = {'model': 'deepseek-flash', 'stream': False,
                 'thinking': {'type': 'disabled'}, 'max_tokens': self.config.max_tokens,
                 'response_format': {'type': 'json_object'},
-                'messages': messages, 'tools': [TOOL, SKILL_TOOL] + (NEWS_TOOLS if self.config.news_enabled else []),
+                'messages': messages, 'tools': [TOOL, SKILL_TOOL],
                 'tool_choice': 'none' if round_no == self.config.max_model_rounds else 'auto',
                 'parallel_tool_calls': False}
         receipt['request'] = body

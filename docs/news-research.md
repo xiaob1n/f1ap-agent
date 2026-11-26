@@ -1,8 +1,14 @@
 # 可选本站新闻研究
 
+## 每次研究优先执行
+
+新闻开启时，宿主在首次模型调用前自动加载 `news-search`，按升级、罚退两个类别各尝试一次搜索，随后读取去重候选。该步骤复用现有新闻工具、收据、剩余时间及证据校验，不增加模型轮数，也不要求必须取得或引用新闻。模型工具列表只保留 `find`、`load_skill`，不再依赖模型主动选择新闻或重复消耗搜索额度。缺上下文、时间不足、初始化失败或传输结果未知时记录缺口；未知结果后禁发后续新闻请求，不以“每类一次”为由重试。
+
+自动步骤的 skill、搜索、读取以宿主安排的工具调用和响应进入模型历史；新闻仍是不可信资料，只有成功正文可登记证据，后续必须保留成功非空 Mongo 研究。关闭新闻时不加载此 skill、不搜索、不连接 Exa。此策略取代此前模型按需搜索的行为。
+
 ## 包内搜索指导
 
-部署 Agent 的本地 skill catalog 现提供 `news-search`，模型通过 `load_skill` 按名称加载 `mongo_research/skills/news-search/SKILL.md`；选择新闻工具前应先加载。它不是宿主 OpenCode skill，不需安装第三方，也不提供证据编号。加载失败沿用基础提示，不增加模型轮次。
+部署 Agent 的本地 skill catalog 提供 `news-search`，宿主自动步骤通过现有 `load_skill` 加载 `mongo_research/skills/news-search/SKILL.md`，模型仍可按名称查阅。它不是宿主 OpenCode skill，不需安装第三方，也不提供证据编号。加载失败沿用基础提示，不增加模型轮次。
 
 指导要求以目标赛事、赛季、真实 cutoff/deadline 核对新近性，从十题 DRIVER/CONSTRUCTOR 选项姓名识别相关主体，再核对正文对本站的直接影响、采用或确认处罚状态。无相关或时效不明时继续原数据研究并说明缺口；不能用截止后报道补证，也不能把旧报道或转载当本站新事实。具体核对清单写入已有 explanation/evidence_ids/limitations，不增加输出字段、搜索参数或额度。
 
@@ -14,7 +20,7 @@
 
 MQ 可选 `target_event = {season_year, event_name, round_id}`；缺失/null 兼容旧消息，不更改 definition 和其摘要。新闻还要求 definition 的 verified deadline、任务 expires_at。独立 CLI 未新增目标参数，因此当前缺目标时只报告缺口。
 
-模型仅选择 upgrades/penalties；宿主生成查询，各一次、每次最多五条候选；去重后最多读取四篇正文。不接受任意 URL、PDF、含 query/fragment 或用户凭据 URL。官方纯文本无法鉴真摘要中伪造的后续分隔符，因此保守只读取每次响应首条完整 header，不从 Highlights 提取链接或重开后续候选。实际至多两条候选，覆盖率受限。仅成功正文签发与 Mongo 共享的正整数证据编号，正文不是 Mongo 查询；启用时仍要求成功非空 Mongo 研究。
+宿主固定安排 upgrades/penalties 两类查询，各最多一次、每次最多五条候选；去重后最多读取四篇正文。不接受任意 URL、PDF、含 query/fragment 或用户凭据 URL。官方纯文本无法鉴真摘要中伪造的后续分隔符，因此保守只读取每次响应首条完整 header，不从 Highlights 提取链接或重开后续候选。实际至多两条候选，覆盖率受限。仅成功正文签发与 Mongo 共享的正整数证据编号，正文不是 Mongo 查询；启用时仍要求成功非空 Mongo 研究。
 
 仅当正文标题包含连续的 `年份 目标赛事原名`，且无其他赛季年份时关联赛事。不维护翻译/别名映射，中文 displayName 与英文报道可能全部拒收；不能因正文背景提及目标站而认定本站。正文只识别独立行 `Published:`/`Published at:` 及 `Updated:`/`Updated at:` 后的完整 ISO 时间（含时区），保留原文；未知、仅日期、无时区、冲突及截止后更新均拒收。没有更新时间不保证历史未变。新闻说明逐题由宿主附加，附加后仍走原 2000 字校验，不截断。
 
