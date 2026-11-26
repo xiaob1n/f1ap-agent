@@ -68,11 +68,6 @@ def page(text: str, url: str, target: dict, cutoff: str, deadline: str) -> dict:
     header_urls = [line[5:] for line in header.splitlines() if line.startswith('URL: ')]
     if header_urls != [url] or not header.startswith('# '):
         raise RuntimeFault('NEWS_PAGE_FORMAT')
-    title = header.splitlines()[0][2:]
-    identity = f"{target['season_year']} {target['event_name']}"
-    if (not re.search(r'(?<!\w)' + re.escape(identity) + r'(?!\w)', title, re.I)
-            or re.search(r'(?<!\d)(?:19|20)\d{2}(?!\d)', title.replace(str(target['season_year']), ''))):
-        raise RuntimeFault('NEWS_TARGET_MISMATCH')
     times = {}
     raw = {}
     if re.search(r'(?im)^\s*(?:last\s+updated|date\s+modified|modified)\b', body):
@@ -114,13 +109,15 @@ def page(text: str, url: str, target: dict, cutoff: str, deadline: str) -> dict:
     if discovered and discovered[0] not in (published.date().isoformat(), published.astimezone(UTC).date().isoformat()):
         raise RuntimeFault('NEWS_TIME_CONFLICT')
     cut, end = datetime.fromisoformat(cutoff), datetime.fromisoformat(deadline)
-    if published > cut or published >= end or (updated and (updated < published or updated > cut or updated >= end)):
+    # 以预测截止向前滚动30天；更新旧文章不能重置其发布时间窗口。
+    if published < cut - timedelta(days=30) or published > cut or published >= end or (updated and (updated < published or updated > cut or updated >= end)):
         raise RuntimeFault('NEWS_TIME_EXCLUDED')
     return {'title': header.splitlines()[0][2:][:500], 'url': url,
         'excerpt': body[:3000], 'truncated': len(body) >= 3000,
         'published_at': published.isoformat(), 'updated_at': updated.isoformat() if updated else None,
         'source_time_raw': raw, 'fetched_at': datetime.now(UTC).isoformat(),
-        'target_event': target, 'historical_availability_guaranteed': False}
+        'target_event': target, 'relevance_scope': 'RECENT_30_DAYS_NOT_TARGET_EVENT_CONFIRMED',
+        'historical_availability_guaranteed': False}
 
 
 class News:
@@ -240,7 +237,10 @@ class News:
                 if category in self.categories:
                     raise RuntimeFault('NEWS_SEARCH_LIMIT')
                 self.categories.add(category)
-                query = f"{self.target['season_year']} {self.target['event_name']} Formula 1 " + (
+                event_name = self.target['event_name']
+                target_name = event_name if event_name.startswith(str(self.target['season_year']) + ' ') else f"{self.target['season_year']} {event_name}"
+                cut = datetime.fromisoformat(self.request.cutoff)
+                query = f"Formula 1 news published between {(cut - timedelta(days=30)).isoformat()} and {cut.isoformat()}, relevant to drivers and teams preparing for {target_name}, including previous races: " + (
                     'car technical upgrades team declared tested adopted' if category == 'upgrades' else 'confirmed grid penalties power unit pit lane start')
                 args = {'query': query, 'numResults': 5}
                 tool = 'web_search_exa'
@@ -289,4 +289,4 @@ class News:
 
     def notice(self):
         missing = '；存在未搜、未读或失败资料缺口' if self.gaps or len(self.categories) < 2 or len(self.reads) < len(self.candidates) else '；检索范围有限'
-        return '新闻说明：本站新闻非完整清单，历史网页版本及截止前收录不保证' + missing + '；未发现不代表没有升级或处罚。'
+        return '新闻说明：近30天报道非本站完整清单，历史版本及截止前收录不保证' + missing + '；历史采用或处罚不自动适用于本站。'

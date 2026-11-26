@@ -10,9 +10,9 @@
 
 部署 Agent 的本地 skill catalog 提供 `news-search`，宿主自动步骤通过现有 `load_skill` 加载 `mongo_research/skills/news-search/SKILL.md`，模型仍可按名称查阅。它不是宿主 OpenCode skill，不需安装第三方，也不提供证据编号。加载失败沿用基础提示，不增加模型轮次。
 
-指导要求以目标赛事、赛季、真实 cutoff/deadline 核对新近性，从十题 DRIVER/CONSTRUCTOR 选项姓名识别相关主体，再核对正文对本站的直接影响、采用或确认处罚状态。无相关或时效不明时继续原数据研究并说明缺口；不能用截止后报道补证，也不能把旧报道或转载当本站新事实。具体核对清单写入已有 explanation/evidence_ids/limitations，不增加输出字段、搜索参数或额度。
+指导要求以真实 cutoff 向前滚动30天核对新近性，从十题 DRIVER/CONSTRUCTOR 选项姓名识别相关主体，再核对正文事实、采用及处罚执行分站。允许此前分站报道作参考，说明来源及对本站的延续性不确定；不能用截止后报道补证，也不能把历史处罚或转载当本站新事实。无相关或时效不明时继续原数据研究并说明缺口；不增加搜索参数或额度。
 
-这是模型行为指导，不是时效性及相关性的硬保证；真正保证需要结构化宿主校验，当前 `news.py` 没有 driver/team 硬 gate。本次不改变其时间筛选、候选读取、证据校验与历史版本不保证的边界。
+发布时间窗口由宿主校验，主体相关性仍是模型行为指导，当前 `news.py` 没有 driver/team 硬 gate。候选绑定、证据编号及历史版本不保证的边界保持。
 
 ## 现有工具边界
 
@@ -22,7 +22,7 @@ MQ 可选 `target_event = {season_year, event_name, round_id}`；缺失/null 兼
 
 宿主固定安排 upgrades/penalties 两类查询，各最多一次、每次最多五条候选；去重后最多读取四篇正文。不接受任意 URL、PDF、含 query/fragment 或用户凭据 URL。官方纯文本无法鉴真摘要中伪造的后续分隔符，因此保守只读取每次响应首条完整 header，不从 Highlights 提取链接或重开后续候选。实际至多两条候选，覆盖率受限。仅成功正文签发与 Mongo 共享的正整数证据编号，正文不是 Mongo 查询；启用时仍要求成功非空 Mongo 研究。
 
-仅当正文标题包含连续的 `年份 目标赛事原名`，且无其他赛季年份时关联赛事。不维护翻译/别名映射，中文 displayName 与英文报道可能全部拒收；不能因正文背景提及目标站而认定本站。正文只识别独立行 `Published:`/`Published at:` 及 `Updated:`/`Updated at:` 后的完整 ISO 时间（含时区），保留原文；未知、仅日期、无时区、冲突及截止后更新均拒收。没有更新时间不保证历史未变。新闻说明逐题由宿主附加，附加后仍走原 2000 字校验，不截断。
+“一个月内”按预测 cutoff 向前滚动30天计算（非当前时间、非上一个自然月、非前几站）：`cutoff - 30天 <= published_at <= cutoff`，同时 `published_at < deadline`。不再要求标题含本站年份或完整分站名；目标仍用于搜索背景，不代表正文已确认为本站事实，收据标记 `RECENT_30_DAYS_NOT_TARGET_EVENT_CONFIRMED`。旧文新更新不能重置发布时间窗口。正文只识别独立行 `Published:`/`Published at:` 及 `Updated:`/`Updated at:` 后的完整 ISO 时间（含时区），另支持下述 F1 官方 UTC 格式；未知、仅日期、无时区、冲突及截止后更新均拒收。没有更新时间不保证历史未变。新闻说明逐题由宿主附加，附加后仍走原 2000 字校验，不截断。
 
 官方实现核对版本：exa-labs/exa-mcp-server commit `0b499f095c4ca145eee07b09137641c037d58449`（3.4.2），`src/tools/webSearch.ts`、`src/tools/webFetch.ts`。运行时另核验 tools/list 必需参数。fetch 返回 content text 而非 structuredContent；其 Published header 把时间截为日期，**不能用作截止前证据**。只有正文保留明确完整时间才可能通过。本文不承诺真实报道覆盖率。
 
