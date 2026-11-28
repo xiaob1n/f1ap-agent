@@ -52,8 +52,10 @@ async def research(request: Request, config: Config, session: ClientSession,
                   '必须至少查询一次；可以自主选择集合、车手和圈号。'
                   '数据是当前观察的可变数据，cutoff 只是事件时间过滤，不保证历史可用性。'
                   '返回有界样本，不能当作完整比赛。drivers 无事件时间；stints 不含 lap_end。'
-                  '最终只输出 JSON 对象，基本字段为 answer（非空研究建议字符串）、evidence_ids（引用查询编号数组）、'
+                  '最终只输出 JSON 对象，基本字段为 answer（非空研究建议字符串）、evidence_ids（非空证据编号整数数组）、'
                   'limitations（非空字符串数组，说明缺失数据、截断与不确定性）。'
+                  '只能引用宿主工具结果中的非空 evidence_id，query_id 仅表示查询记录；'
+                  '空查询结果、失败、skill 和搜索摘要不可引用为证据，只能在 limitations 说明缺口。'
                   '这不是冻结十题 wire 预测，不得声称已通过其契约验证。')
         if definition is not None:
             prompt += ('本次最终 JSON 必须恰好包含 answer、evidence_ids、limitations、predictions 四个顶层字段，'
@@ -67,7 +69,8 @@ async def research(request: Request, config: Config, session: ClientSession,
                        '数量遵守 min_picks/max_picks，有序题按名次排列，不能重复。'
                        '十题都要选择最可能的答案，不得以样本较少、缺少正赛数据或比赛尚未发生为由弃答。'
                        '证据较弱时仍作赛前估计，在 explanation 中区分观测事实、推测和假设，并说明不确定性；不得编造数据或引用。'
-                       'explanation 每题最多2000字，evidence_ids 最多32个实际查询编号；'
+                       'explanation 每题最多2000字，evidence_ids 最多32个可引用证据编号；'
+                       '每题 evidence_ids 必须非空、不重复，且为顶层 evidence_ids 的子集；顶层必须包含全部逐题引用。'
                        'limitations 最多20条、每条最多500字。先查询确认所选会话与目标分站的关系，'
                        '小游戏在排位赛前截止，所有排位和正赛问题必须用截止前练习赛数据推测，不等待排位或正赛结果。'
                        '排位题比较有效最快圈、短程稳定性和队内差距；正赛题结合多圈节奏、轮胎、进站和赛道事件推测。'
@@ -107,7 +110,13 @@ async def research(request: Request, config: Config, session: ClientSession,
                 '现在进入最后一轮，请依据已有查询证据直接输出规定的最终 JSON，不再调用工具。'
                 '有十题定义时必须对全部十题输出 PREDICTED 和合法非空 picks。'
                 '用已有练习赛数据推测排位和正赛，证据较弱也给出最可能选项并说明假设，不编造事实或引用。'}]
-        message = await model.call(client, messages, state['rounds'] + 1)
+        # 清单来自宿主登记结果，不依赖模型从多轮工具记录中自行推算编号。
+        call_messages = messages
+        if state['queries']:
+            call_messages = [{**messages[0], 'content': json_string(messages[0]['content'])
+                + '\n宿主当前可引用证据编号：' + json.dumps(sorted(evidence_ids))
+                + '。最终顶层与逐题 evidence_ids 只能使用这些整数编号，不能引用空结果或未知编号。'}, *messages[1:]]
+        message = await model.call(client, call_messages, state['rounds'] + 1)
         pending = json_array(message.get('tool_calls', []))
         if len(pending) > 10:
             raise RuntimeFault('TOOL_BATCH_LIMIT')
@@ -152,8 +161,9 @@ async def research(request: Request, config: Config, session: ClientSession,
                 error.code if isinstance(error, RuntimeFault) else 'MCP_TIMEOUT'})
             atomic_json(path, receipt)
             raise
+        result['evidence_id'] = number if result['documents'] else None
         receipt.update({'outcome': 'SUCCEEDED', 'result': result})
-        if not news or result['documents']:
+        if result['documents']:
             evidence_ids.add(number)
         mongo_nonempty = mongo_nonempty or bool(result['documents'])
         atomic_json(path, receipt)
@@ -186,6 +196,18 @@ async def research(request: Request, config: Config, session: ClientSession,
                 await run_tool('read_news', {'url': json_string(candidate['url'])})
         return state
 
+    def repair_evidence(state: State, code: str) -> State:
+        if state['rounds'] >= config.max_model_rounds:
+            raise RuntimeFault(code)
+        # 仅用原有剩余轮次纠正已知输出，不追加额度，也不由宿主代填或删除引用。
+        return {**state, 'messages': [*state['messages'], {'role': 'user', 'content':
+            f'上次输出未通过 {code} 校验。当前可引用证据编号：{json.dumps(sorted(evidence_ids))}。'
+            '请仅依据已有证据重新输出完整 JSON，不调用工具。顶层 evidence_ids 必须非空且只含可引用整数编号；'
+            '每题 evidence_ids 必须非空、不重复、最多32个，且为顶层 evidence_ids 的子集。'
+            '空查询、失败、skill、摘要和未知编号不可引用，只在 limitations 说明缺口；'
+            f'逐题 explanation 必须非空且最多{1880 if news else 2000}字。'
+            '重新核对相关预测与解释，不编造证据、不改变题目选项标识。'}], 'answer': ''}
+
     def validate(state: State) -> State:
         answer = parse_output(state['answer'])
         expected_fields = {'answer', 'evidence_ids', 'limitations'}
@@ -201,21 +223,23 @@ async def research(request: Request, config: Config, session: ClientSession,
         if set(answer) != expected_fields:
             raise RuntimeFault('ANSWER_FIELDS')
         ids = json_array(answer['evidence_ids'])
-        if news:
-            if not mongo_nonempty:
-                raise RuntimeFault('ANSWER_MONGO_EVIDENCE_REQUIRED')
-            if any(type(item) is not int or item not in evidence_ids for item in ids):
-                raise RuntimeFault('ANSWER_EVIDENCE_INVALID')
-            if definition is not None:
-                for item in json_events(answer['predictions']):
-                    item['explanation'] = json_string(item['explanation']) + '\n' + news.notice()
+        if news and not mongo_nonempty:
+            raise RuntimeFault('ANSWER_MONGO_EVIDENCE_REQUIRED')
         limitations = json_array(answer['limitations'])
         if (not json_string(answer['answer']).strip() or not ids or not limitations
-            or any(type(item) is not int or item not in range(1, state['queries'] + 1) for item in ids)
+            or any(type(item) is not int or item not in evidence_ids for item in ids)
             or any(not json_string(item).strip() for item in limitations)):
-            raise RuntimeFault('ANSWER_EVIDENCE_INVALID')
+            return repair_evidence(state, 'ANSWER_EVIDENCE_INVALID')
         if definition is not None:
-            save_predictions(definition, answer, request.output, request.session_key, request.cutoff)
+            if news:
+                for item in json_events(answer['predictions']):
+                    item['explanation'] = json_string(item['explanation']) + '\n' + news.notice()
+            try:
+                save_predictions(definition, answer, request.output, request.session_key, request.cutoff)
+            except RuntimeFault as error:
+                if error.code != 'PREDICTION_EVIDENCE':
+                    raise
+                return repair_evidence(state, error.code)
         atomic_json(request.output / 'answer.json', {'kind': 'CURRENT_RESEARCH',
             'wire_validated': False, 'historical_availability_guaranteed': False,
             'session_key': request.session_key, 'cutoff': request.cutoff,
