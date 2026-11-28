@@ -1,8 +1,14 @@
 # E10 Agent 运维手册
 
-适用范围为 2026-11-13 E07 回退基线、冻结契约 `1.0.2`、单 API 与单 Agent、`provider_code=MOCK` 和合成 `TEST_FIXTURE`。不运行 Chroma/RAG、新闻爬虫、真实 Embedding 或 E09 生成融合；成本只记录，UNKNOWN 不记零，也不触发预算停机。正式官方 LIVE 为 `NOT_VERIFIED`。
+> **当前退役提示：本手册主体为历史 E10/V1 mock 运维记录，不是当前执行指南。** 正式 MQ 入口现仅接收 `ANSWERS_V2`，使用独立 `ResearchRuntime`，不再运行旧 `Worker`。当前启动、健康检查与 Nacos 配置以 [README](../README.md#运行入口) 为准；旧 `python -m f1ap_agent.worker` 任务入口返回退役错误及退出码 2（`--help` 除外）。保留旧库和合成夹具辅助不代表正式入口仍支持 V1 任务。
+>
+> 正式 MQ 已移除 `--mapping`、`--llm-config`、`--mock-plan`、`--news-catalog`、`--mock-revisions`、`--mock-scenario`、`--reconcile-usage`。`--existing-topology` 保留且连接始终被动，不声明或绑定拓扑；Nacos 旧 model/mapping 字段仍解析校验，但不用于正式 MQ 任务，不要求本次强制迁移线上配置。独立研究的 `--config` 不受影响。
+>
+> 当前恢复依据为 runtime 的 `unscored/records.json`：`REGISTERED → INTENT → COMPLETED`，回包确认另记 `confirmed`。保持 Store 单写锁；付费调用结果未知时不自动重做。下文旧 runs/log/pending/accepted、mock 和补价步骤不能替代 V2 恢复判断，勿据此清空、重建或重跑旧状态。源码退役未部署，旧实例不会自动更新；本文不提供本次构建/测试通过或真实部署生效的证据。
 
-本手册的命令已对照当前源码与配置阅读核实，尚未在远端执行。Task11 必须逐条采集实际 argv、退出码、镜像摘要、耗时和清理回执，当前状态为 `PENDING_TASK11`，不能据此宣称容器或 G5 PASS。发布前另读 [API 发布清单](../../f1ap-api/docs/e10-release-checklist.md) 与 [运行接口](../../f1ap-api/docs/e10-interfaces.md)。
+历史适用范围为 2026-11-13 E07 回退基线、冻结契约 `1.0.2`、单 API 与单 Agent、`provider_code=MOCK` 和合成 `TEST_FIXTURE`。不运行 Chroma/RAG、新闻爬虫、真实 Embedding 或 E09 生成融合；成本只记录，UNKNOWN 不记零，也不触发预算停机。正式官方 LIVE 为 `NOT_VERIFIED`。
+
+以下命令和 Task11 状态属于当时基线，不代表已对照退役后的源码核实。历史状态为 `PENDING_TASK11`，不能据此宣称容器或 G5 PASS。[API 发布清单](../../f1ap-api/docs/e10-release-checklist.md) 与 [运行接口](../../f1ap-api/docs/e10-interfaces.md) 同样应按历史材料阅读。
 
 ## 1. 启动前提
 
@@ -78,18 +84,7 @@ SIGKILL 只在 Task11 获准故障演练中使用。普通恢复先保留卷和�
 
 `CRASH_UNCERTAIN` 是 Worker 恢复语义，未必作为 CLI stderr 原样输出；消费器可能拒绝非法或损坏任务，不可假设所有 RuntimeFault 都会自动重入队。需同时核对 API 运行状态与 Broker 投递记录。
 
-用量补价也是写者，先停守护 Agent，再用同一卷运行一次，不能与常驻消费者并发：
-
-```bash
-: "${RUN_ID:?}" "${CALL_KEY:?}" "${REVISION:?}"
-: "${MOCK_PLAN:?容器内只读路径}" "${NEWS_CATALOG:?容器内只读路径}"
-: "${MOCK_REVISIONS:?容器内只读路径}" "${MOCK_SCENARIO:?}"
-dc stop -t 35 f1ap-agent
-dc run --rm --no-deps f1ap-agent --mock-plan "$MOCK_PLAN" --news-catalog "$NEWS_CATALOG" --mock-revisions "$MOCK_REVISIONS" --mock-scenario "$MOCK_SCENARIO" --reconcile-usage "$RUN_ID:$CALL_KEY:$REVISION"
-dc up -d --no-build f1ap-agent
-```
-
-`dc run` 参数追加在镜像已有入口之后，因此继承 `--run --daemon --ensure-runtime --existing-topology` 和两个数据路径；reconcile 分支仅补发登记修订后退出。上述四个文件/场景必须由受控计划登记且实际只读挂载。跨月核验按不可变 call_started_at 归属 UTC 月，不是实钟跨月长跑。
+历史 E07 曾通过 mock 修订和 `--reconcile-usage` 补发用量；该分支现已从正式 MQ 入口退役，原执行命令不再适用，故不在此保留可复制执行步骤。不要为补价启动旧 Worker、切换旧镜像处理当前任务，或将未知付费调用当作可安全重试；保留原始状态并先对账。
 
 ## 4. 停写一致备份与恢复
 

@@ -4,6 +4,8 @@ __pycache__/
 *.py[cod]
 # 测试代码和测试证据不提交到仓库，保留本地运行。
 tests/
+test_*.py
+*_test.py
 docs/*evidence*
 .omo/
 .idea/

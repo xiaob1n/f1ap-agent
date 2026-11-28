@@ -4,6 +4,17 @@ F1 Predict 的 Python 预测执行端，与 [F1AP API](https://github.com/xiaob1
 
 Agent 不直接写业务 MySQL，也不向 F1 官网提交答案。当前答案协议为 `ANSWERS_V2`，输出选项、解释、证据引用和数据不足状态，不计算竞猜积分。
 
+## V1 任务运行时已退役
+
+正式入口 `f1ap-agent-mq` 仅解析 V2 `ResearchTask`，由独立的 `ResearchRuntime` 执行，不再接入旧 `Worker`。旧任务消息拒收且不重新入队；`f1ap.v1` exchange 和 `f1ap.agent.tasks.v1` 队列仅为兼容命名。旧 Worker 内部库与合成夹具辅助仍可能保留，不能据此认为正式入口仍支持 V1。
+
+- `python -m f1ap_agent.worker` 不再执行任务，返回 `LEGACY_V1_TASKS_RETIRED`、退出码 2（`--help` 除外）。
+- 正式 MQ CLI 已移除 `--mapping`、`--llm-config`、`--mock-plan`、`--news-catalog`、`--mock-revisions`、`--mock-scenario`、`--reconcile-usage`，不要沿用旧 mock 或补价命令。
+- `--existing-topology` 保留；无论是否传入，连接始终被动检查既有拓扑，不声明 exchange/queue，也不绑定。共享拓扑未改动。
+- Nacos schema 暂保持向后兼容：旧 `model`、mapping 字段仍会解析校验，但正式 MQ 不再使用它们执行任务；不要因 CLI 参数移除就直接删除配置中的这些字段。独立 `f1ap-mongo-research` 的本地 `--config` 仍保留。
+
+Store 单写锁和 V2 持久化恢复边界不变，历史状态不自动清理、迁移或重跑。本次源码退役尚不代表已部署，旧运行实例不会自动更新；构建和运行验证须以实际记录为准。旧 [E10 运维手册](docs/runbook.md) 主体仅供历史参考，不能作为当前 V1/mock 恢复步骤。
+
 ## 预测链路
 
 ```text
@@ -120,7 +131,7 @@ Nacos 引导通过环境注入，不自动加载 `.env`：
 
 此 CLI 仅接受本机 HTTP API 地址，使用环境变量 `F1AP_INTERNAL_WRITE_TOKEN`；它不像调度器那样支持令牌文件或 `http://api:8080`。不要直接照搬容器调度配置给它。
 
-同步状态为 `IMPORTED`、`UNCHANGED`、`SKIPPED_PROTECTED_ROUND` 或 `FAILED`。同步依赖 API 的 `/internal/v1/round-syncs`，当前 API 本地主源码缺少该入口，因此需核对配套 API 版本，不能假定两个干净克隆即可完成此流程。同步本身不创建预测请求。
+同步状态为 `IMPORTED`、`UNCHANGED`、`SKIPPED_PROTECTED_ROUND` 或 `FAILED`。同步依赖 API 的 `/internal/v1/round-syncs`；当前源码已由 `RoundImportController` 提供该入口，受 `f1ap.e03.enabled` 门控并需内部令牌。执行前仍须核对部署版本、配置和授权。同步本身不创建预测请求，也不触发旧 V1 任务。
 
 ### 独立研究
 
@@ -135,7 +146,7 @@ Nacos 引导通过环境注入，不自动加载 `.env`：
 ## 结果与可靠性
 
 - 查询和模型调用生成独立回执；研究结果写入 `answer.json`，有十题定义时另写 `predictions.json`。
-- MQ 运行记录保存在 runtime 的 `unscored/` 下，状态依次为 `REGISTERED → INTENT → COMPLETED → confirmed`。
+- MQ 运行记录保存在 runtime 的 `unscored/records.json` 中，状态依次为 `REGISTERED → INTENT → COMPLETED`，发送确认后另记 `confirmed` 标记。
 - 付费研究开始后崩溃不自动重做调用；完成事件先落盘，再可靠发送，API 幂等消费。
 - 原始数据库内容和 MCP 子进程不接收无关服务凭据；传输失败不自动重试模型调用。
 

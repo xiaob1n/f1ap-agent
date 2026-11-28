@@ -3,7 +3,6 @@ import os
 from collections.abc import Callable
 from contextvars import Context
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import anyio
 
@@ -12,9 +11,7 @@ from f1ap_agent.runtime import Json, RuntimeFault, atomic_json, json_integer, js
 from .config import Config, Request
 from .mq_contract import ResearchTask, stamp
 from .output import failure_code
-
-if TYPE_CHECKING:
-    from f1ap_agent.worker.engine import Worker
+from .runtime import ResearchRuntime
 
 
 async def invoke(request: Request, config: Config, remaining: float) -> None:
@@ -28,7 +25,7 @@ def save(path: Path, records: dict[str, Json]) -> None:
     atomic_json(path, {'sha256': digest(records), 'records': records})
 
 
-def process(worker: 'Worker', task: ResearchTask, clock: Callable[[], str]) -> bool:
+def process(worker: ResearchRuntime, task: ResearchTask, clock: Callable[[], str]) -> bool:
     if stamp(task.request['occurred_at']) > stamp(clock()):
         raise RuntimeFault('UNSCORED_FUTURE_REQUEST')
     path = worker.store.root / 'unscored' / 'records.json'
